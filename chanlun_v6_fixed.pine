@@ -1,0 +1,731 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0
+// https://www.tradingview.com/WIKI_Licensing_Agreement/
+//@version=6
+
+indicator("纏論系統 - 實戰完整版 v6", overlay=true, max_lines_count=500, max_boxes_count=500, max_labels_count=500)
+
+// ============================================================================
+// 模組一:MACD
+// ============================================================================
+
+[macd_fast, macd_slow, hist] = ta.macd(close, 12, 26, 9)
+
+float dif = macd_fast - macd_slow
+float dea = ta.ema(dif, 9)
+
+plot(hist, "MACD_Hidden", display=display.none)
+
+// ============================================================================
+// 模組二:參數設定
+// ============================================================================
+
+grp_logic = "纏論核心與轉折靈敏度"
+
+strict_separation = input.bool(false, "啟用嚴格同向價格突破限制", group=grp_logic)
+enable_overlap_filter = input.bool(true, "啟用頂底分型價格重疊嚴格排除", group=grp_logic)
+enable_double_peak_merge = input.bool(false, "啟用雙頂/雙底強制合併", group=grp_logic)
+double_peak_threshold = input.float(0.5, "雙頂/雙底合併容忍度 ATR", step=0.1, group=grp_logic)
+strict_fractal_gap = input.bool(true, "啟用嚴格頂底分型間隔", group=grp_logic)
+require_one_bar_after_containment = input.bool(true, "包含處理後至少間隔一根K線", group=grp_logic)
+atr_len = input.int(14, "ATR 長度", minval=1, group=grp_logic)
+
+// ============================================================================
+// 高級別趨勢
+// ============================================================================
+
+grp_htf = "區間套高級別大勢保護"
+
+enable_htf_filter = input.bool(true, "啟用高級別 MACD 動能保護", group=grp_htf)
+htf_res = input.timeframe("60", "高級別時間週期", group=grp_htf)
+
+[htf_macd, htf_signal, htf_hist] = request.security(syminfo.tickerid, htf_res, ta.macd(close, 12, 26, 9))
+
+// ============================================================================
+// 中樞設定
+// ============================================================================
+
+grp_merge = "架構優化:同向擴張與生命週期"
+
+enable_center_merge = input.bool(true, "啟用同向中樞重疊自動包覆", group=grp_merge)
+max_center_duration = input.int(150, "中樞最大生命週期", minval=10, group=grp_merge)
+
+grp_isolation = "架構優化:中樞與筆解耦"
+
+enable_center_isolation = input.bool(true, "啟用中樞結構獨立保護", group=grp_isolation)
+max_pen_cap_for_center = input.int(50, "中樞計算最大單筆K線數", minval=1, group=grp_isolation)
+
+grp_manual_tuning = "手動微調"
+
+center_mult_input = input.float(0.4, "中樞震盪靈敏度", minval=0.05, maxval=1.5, step=0.05, group=grp_manual_tuning)
+trend_mult_input = input.float(2.0, "趨勢強勢區過濾乘數", minval=1.0, maxval=5.0, step=0.1, group=grp_manual_tuning)
+
+// ============================================================================
+// 市場狀態
+// ============================================================================
+
+grp_regime = "市場狀態與自適應門檻"
+
+enable_regime_filter = input.bool(true, "啟用震盪盤自動過濾", group=grp_regime)
+adx_len = input.int(14, "ADX 長度", minval=1, group=grp_regime)
+adx_threshold = input.float(20.0, "ADX 趨勢門檻", step=1.0, group=grp_regime)
+
+// ============================================================================
+// 多週期筆過濾
+// ============================================================================
+
+grp_tf_filter = "多週期基礎過濾"
+
+tf_1_4_bars = input.int(3, "1~4分:最少K線間隔", minval=1, group=grp_tf_filter)
+tf_1_4_atr = input.float(1.2, "1~4分:基礎筆振幅 ATR", step=0.1, group=grp_tf_filter)
+tf_5_15_bars = input.int(2, "5~15分:最少K線間隔", minval=1, group=grp_tf_filter)
+tf_5_15_atr = input.float(1.0, "5~15分:基礎筆振幅 ATR", step=0.1, group=grp_tf_filter)
+tf_30_60_bars = input.int(1, "30~60分:最少K線間隔", minval=1, group=grp_tf_filter)
+tf_30_60_atr = input.float(0.8, "30~60分:基礎筆振幅 ATR", step=0.1, group=grp_tf_filter)
+tf_daily_bars = input.int(1, "日線以上:最少K線間隔", minval=1, group=grp_tf_filter)
+tf_daily_atr = input.float(0.5, "日線以上:基礎筆振幅 ATR", step=0.1, group=grp_tf_filter)
+
+// ============================================================================
+// 動態時間容忍度
+// ============================================================================
+
+grp_expansion = "動態時間容忍度"
+
+max_atr_multiplier = input.float(2.5, "長筆最大容忍度", step=0.1, group=grp_expansion)
+growth_rate = input.float(0.03, "每根K線容忍度增長率", step=0.01, group=grp_expansion)
+
+// ============================================================================
+// Daily / Intraday
+// ============================================================================
+
+grp_daily = "日線級別參數"
+
+daily_atr_factor = input.float(0.5, "日線中樞重疊 ATR", minval=0.1, step=0.1, group=grp_daily)
+
+grp_intraday = "分鐘線參數"
+
+intraday_atr_factor = input.float(0.35, "分鐘線中樞重疊 ATR", minval=0.1, step=0.1, group=grp_intraday)
+
+// ============================================================================
+// 缺口
+// ============================================================================
+
+grp_gap = "跳空缺口"
+
+enable_gap_virtual = input.bool(true, "啟用缺口虛擬K線", group=grp_gap)
+gap_threshold_pct = input.float(2.0, "缺口最小幅度 %", minval=0.1, step=0.5, group=grp_gap)
+
+// ============================================================================
+// 即時訊號
+// ============================================================================
+
+enable_realtime_alert = input.bool(true, "啟用即時預備買賣點", group=grp_logic)
+enable_aggressive_entry = input.bool(true, "允許次級別即時買賣點", group=grp_logic)
+prep_strict_mode = input.bool(false, "啟用高精度預判嚴格過濾", group=grp_logic)
+enable_9seg_upgrade = input.bool(true, "啟用9段中樞升級", group=grp_logic)
+enable_line_segment = input.bool(true, "啟用線段自動劃分", group=grp_logic)
+
+// ============================================================================
+// 視覺
+// ============================================================================
+
+grp_style = "中樞與線段視覺"
+
+center_box_mode = input.string("黃金平衡模式", "中樞Box起點模式", options=["從第1筆精準起點", "黃金平衡模式", "從第2筆緊湊起點"], group=grp_style)
+col_bull = input.color(color.new(color.blue, 50), "上升中樞", group=grp_style)
+col_bear = input.color(color.new(color.red, 50), "下降中樞", group=grp_style)
+col_ext_bull = input.color(color.new(color.green, 50), "上升升級中樞", group=grp_style)
+col_ext_bear = input.color(color.new(color.purple, 50), "下降升級中樞", group=grp_style)
+col_seg_up = input.color(color.aqua, "上升線段", group=grp_style)
+col_seg_dn = input.color(color.fuchsia, "下降線段", group=grp_style)
+
+// ============================================================================
+// 買賣點
+// ============================================================================
+
+grp_signal = "買賣點"
+
+show_signals = input.bool(true, "顯示買賣點", group=grp_signal)
+only_segment_signal = input.bool(false, "僅顯示線段級別買賣點", group=grp_signal)
+signal_min_atr = input.float(0.6, "買賣點最小振幅 ATR", minval=0.1, step=0.1, group=grp_signal)
+label_font_size = input.string("tiny", "買賣點字體", options=["auto", "tiny", "small", "normal", "large", "huge"], group=grp_signal)
+label_offset_m = input.float(0.2, "標籤距離 ATR", minval=0.05, step=0.05, group=grp_signal)
+realtime_offset_m = input.float(0.6, "即時標籤距離 ATR", minval=0.1, step=0.05, group=grp_signal)
+col_b1 = input.color(color.green, "一買", group=grp_signal)
+col_s1 = input.color(color.red, "一賣", group=grp_signal)
+col_b2 = input.color(color.lime, "二買", group=grp_signal)
+col_s2 = input.color(color.orange, "二賣", group=grp_signal)
+col_b3 = input.color(color.yellow, "三買", group=grp_signal)
+col_s3 = input.color(color.fuchsia, "三賣", group=grp_signal)
+
+// ============================================================================
+// 模組三:Type Definitions
+// ============================================================================
+
+type Pen
+    float h
+    float l
+    int start_idx
+    int end_idx
+    bool is_up
+    float pen_area
+    float peak_dif
+
+type LineSegment
+    float h
+    float l
+    int start_idx
+    int end_idx
+    bool is_up
+    line l_obj
+
+type KLine
+    float h
+    float l
+    int idx
+
+type StandardBar
+    float h
+    float l
+    int idx
+    int original_start_idx
+    int original_end_idx
+
+type CenterStruct
+    box b
+    float zg
+    float zd
+    float max_high
+    float min_low
+    bool is_bull
+    Pen[] pens
+    bool is_upgrade
+
+// ============================================================================
+// 模組四:輔助函數
+// ============================================================================
+
+get_fontsize(string size_str) =>
+    size_str == "auto" ? size.auto : size_str == "tiny" ? size.tiny : size_str == "small" ? size.small : size_str == "normal" ? size.normal : size_str == "large" ? size.large : size.huge
+
+// ============================================================================
+// 中樞範圍
+// ============================================================================
+
+get_center_bounds(Pen[] ps, bool isolate, int cap) =>
+    float abs_max_h = -999999.0
+    float abs_min_l = 999999.0
+    float zg_val = 0.0
+    float zd_val = 0.0
+
+    if array.size(ps) >= 3
+        Pen p1 = array.get(ps, 0)
+        Pen p2 = array.get(ps, 1)
+        Pen p3 = array.get(ps, 2)
+
+        float p1_mid = math.avg(p1.h, p1.l)
+        float p2_mid = math.avg(p2.h, p2.l)
+        float p3_mid = math.avg(p3.h, p3.l)
+
+        float p1_h = isolate and (p1.end_idx - p1.start_idx > cap) ? p1_mid + (p1.h - p1_mid) * 0.7 : p1.h
+        float p2_h = isolate and (p2.end_idx - p2.start_idx > cap) ? p2_mid + (p2.h - p2_mid) * 0.7 : p2.h
+        float p3_h = isolate and (p3.end_idx - p3.start_idx > cap) ? p3_mid + (p3.h - p3_mid) * 0.7 : p3.h
+
+        float p1_l = isolate and (p1.end_idx - p1.start_idx > cap) ? p1_mid - (p1_mid - p1.l) * 0.7 : p1.l
+        float p2_l = isolate and (p2.end_idx - p2.start_idx > cap) ? p2_mid - (p2_mid - p2.l) * 0.7 : p2.l
+        float p3_l = isolate and (p3.end_idx - p3.start_idx > cap) ? p3_mid - (p3_mid - p3.l) * 0.7 : p3.l
+
+        zg_val := math.min(math.min(p1_h, p2_h), p3_h)
+        zd_val := math.max(math.max(p1_l, p2_l), p3_l)
+
+        for i = 0 to array.size(ps) - 1
+            Pen p = array.get(ps, i)
+            abs_max_h := math.max(abs_max_h, p.h)
+            abs_min_l := math.min(abs_min_l, p.l)
+
+    [zg_val, zd_val, abs_max_h, abs_min_l]
+
+// ============================================================================
+// 判斷中樞方向
+// ============================================================================
+
+determine_center_is_bull(CenterStruct[] history, float zg, float zd) =>
+    bool is_bull = true
+
+    if array.size(history) > 0
+        CenterStruct last = array.get(history, array.size(history) - 1)
+        float current_mid = (zg + zd) / 2.0
+        float previous_mid = (last.zg + last.zd) / 2.0
+        is_bull := current_mid > previous_mid
+
+    is_bull
+
+// ============================================================================
+// 包含關係處理
+// ============================================================================
+
+process_containment(KLine[] raw_list) =>
+    StandardBar[] std_list = array.new<StandardBar>()
+    int r_size = array.size(raw_list)
+
+    if r_size > 0
+        KLine first_k = array.get(raw_list, 0)
+        array.push(std_list, StandardBar.new(first_k.h, first_k.l, first_k.idx, first_k.idx, first_k.idx))
+
+    if r_size > 1
+        for i = 1 to r_size - 1
+            KLine curr = array.get(raw_list, i)
+            int std_size = array.size(std_list)
+            StandardBar prev = array.get(std_list, std_size - 1)
+
+            bool is_gap_up = curr.l > prev.h
+            bool is_gap_dn = curr.h < prev.l
+
+            float gap_pct_up = is_gap_up ? ((curr.l - prev.h) / prev.h) * 100.0 : 0.0
+            float gap_pct_dn = is_gap_dn ? ((prev.l - curr.h) / prev.l) * 100.0 : 0.0
+
+            bool large_gap = enable_gap_virtual and (gap_pct_up >= gap_threshold_pct or gap_pct_dn >= gap_threshold_pct)
+
+            if large_gap
+                float virtual_h = is_gap_up ? curr.l : prev.l
+                float virtual_l = is_gap_up ? prev.h : curr.h
+
+                array.push(std_list, StandardBar.new(virtual_h, virtual_l, curr.idx, prev.original_end_idx, curr.idx))
+                array.push(std_list, StandardBar.new(curr.h, curr.l, curr.idx, curr.idx, curr.idx))
+            else
+                bool is_contained = (curr.h <= prev.h and curr.l >= prev.l) or (curr.h >= prev.h and curr.l <= prev.l)
+
+                if is_contained
+                    bool is_up_trend = array.size(std_list) >= 2 ? prev.h >= array.get(std_list, array.size(std_list) - 2).h : true
+                    float new_h = is_up_trend ? math.max(prev.h, curr.h) : math.min(prev.h, curr.h)
+                    float new_l = is_up_trend ? math.max(prev.l, curr.l) : math.min(prev.l, curr.l)
+
+                    array.set(std_list, array.size(std_list) - 1, StandardBar.new(new_h, new_l, curr.idx, prev.original_start_idx, curr.idx))
+                else
+                    array.push(std_list, StandardBar.new(curr.h, curr.l, curr.idx, curr.idx, curr.idx))
+
+    std_list
+
+// ============================================================================
+// 找原始K線真實極值
+// ============================================================================
+
+find_true_raw_extreme(KLine[] raw_list, int start_idx, int end_idx, bool is_top_search) =>
+    int best_idx = start_idx
+    float best_price = is_top_search ? -999999.0 : 999999.0
+    int r_size = array.size(raw_list)
+
+    if r_size > 0
+        for i = 0 to r_size - 1
+            KLine k = array.get(raw_list, i)
+            if k.idx >= start_idx and k.idx <= end_idx
+                if is_top_search and k.h > best_price
+                    best_price := k.h
+                    best_idx := k.idx
+                else if not is_top_search and k.l < best_price
+                    best_price := k.l
+                    best_idx := k.idx
+
+    [best_idx, best_price]
+
+// ============================================================================
+// 模組五:全局狀態
+// ============================================================================
+
+var line[] pen_lines = array.new_line()
+var Pen[] pen_objects = array.new<Pen>()
+var LineSegment[] segment_objects = array.new<LineSegment>()
+var KLine[] raw_list_var = array.new<KLine>()
+var CenterStruct[] history_centers = array.new<CenterStruct>()
+
+var int last_pen_idx = 0
+var int last_logic_idx = 0
+var int last_pen_type = 0
+var float last_pen_visual_price = 0.0
+
+var float active_extreme_price = 0.0
+var int active_extreme_bar_idx = 0
+var CenterStruct active_center = na
+var int break_count = 0
+var float current_pen_area = 0.0
+var float max_pen_dif = -999999.0
+var float last_macd_val = 0.0
+var int last_trade_type = 0
+var float ref_b1_s1_price = 0.0
+var bool has_escaped_zg = false
+var bool has_escaped_zd = false
+var float target_zg = 0.0
+var float target_zd = 0.0
+
+var int seg_start_idx = 0
+var float seg_start_price = 0.0
+var int seg_direction = 0
+var int pen_count_in_seg = 0
+var label realtime_preview_lbl = na
+
+// ============================================================================
+// 模組六:時間週期與動態參數
+// ============================================================================
+
+bool is_intraday = timeframe.isintraday
+bool is_daily_or_above = timeframe.isdaily or timeframe.isweekly or timeframe.ismonthly
+float effective_atr_factor = is_intraday ? intraday_atr_factor : daily_atr_factor
+int tf_mins = timeframe.multiplier
+
+int dyn_min_bars = 1
+float dyn_pen_min_atr = 0.0
+
+if is_daily_or_above
+    dyn_min_bars := tf_daily_bars
+    dyn_pen_min_atr := tf_daily_atr
+else if tf_mins <= 4
+    dyn_min_bars := tf_1_4_bars
+    dyn_pen_min_atr := tf_1_4_atr
+else if tf_mins <= 15
+    dyn_min_bars := tf_5_15_bars
+    dyn_pen_min_atr := tf_5_15_atr
+else if tf_mins <= 60
+    dyn_min_bars := tf_30_60_bars
+    dyn_pen_min_atr := tf_30_60_atr
+else
+    dyn_min_bars := tf_daily_bars
+    dyn_pen_min_atr := tf_daily_atr
+
+int required_pen_gap_bars = dyn_min_bars
+if require_one_bar_after_containment
+    required_pen_gap_bars := dyn_min_bars + 1
+
+float current_atr = ta.atr(atr_len)
+float smoothed_atr = ta.ema(current_atr, 10)
+[diplus, diminus, adx_val] = ta.dmi(14, adx_len)
+bool is_trending_market = not enable_regime_filter or adx_val >= adx_threshold
+
+// ============================================================================
+// Alert State
+// ============================================================================
+
+var bool alert_b1_signal = false
+var bool alert_b2_signal = false
+var bool alert_b3_signal = false
+var bool alert_s1_signal = false
+var bool alert_s2_signal = false
+var bool alert_s3_signal = false
+var bool alert_b_prep = false
+var bool alert_s_prep = false
+
+alert_b1_signal := false
+alert_b2_signal := false
+alert_b3_signal := false
+alert_s1_signal := false
+alert_s2_signal := false
+alert_s3_signal := false
+alert_b_prep := false
+alert_s_prep := false
+
+current_pen_area += hist
+max_pen_dif := math.max(max_pen_dif, dif)
+
+if barstate.isconfirmed
+    array.push(raw_list_var, KLine.new(high, low, bar_index))
+    if array.size(raw_list_var) > 400
+        array.shift(raw_list_var)
+
+StandardBar[] cleaned_list = process_containment(raw_list_var)
+int list_size = array.size(cleaned_list)
+float macd_val = macd_fast - macd_slow
+
+// ============================================================================
+// 模組七:目前未確認筆延伸
+// ============================================================================
+
+if array.size(pen_lines) > 0 and array.size(pen_objects) > 0
+    line active_line = array.get(pen_lines, array.size(pen_lines) - 1)
+    Pen active_p = array.get(pen_objects, array.size(pen_objects) - 1)
+
+    if last_pen_type == -1 and low < last_pen_visual_price
+        last_pen_visual_price := low
+        active_extreme_price := low
+        active_extreme_bar_idx := bar_index
+        line.set_xy2(active_line, bar_index, low)
+        active_p.l := low
+        active_p.end_idx := bar_index
+    else if last_pen_type == 1 and high > last_pen_visual_price
+        last_pen_visual_price := high
+        active_extreme_price := high
+        active_extreme_bar_idx := bar_index
+        line.set_xy2(active_line, bar_index, high)
+        active_p.h := high
+        active_p.end_idx := bar_index
+
+// ============================================================================
+// 模組八:纏論核心
+// ============================================================================
+
+if barstate.isconfirmed and list_size >= 5
+    StandardBar k1 = array.get(cleaned_list, list_size - 5)
+    StandardBar k2 = array.get(cleaned_list, list_size - 4)
+    StandardBar k3 = array.get(cleaned_list, list_size - 3)
+    StandardBar k4 = array.get(cleaned_list, list_size - 2)
+    StandardBar k5 = array.get(cleaned_list, list_size - 1)
+
+    bool is_top = (k3.h > k1.h and k3.h > k2.h and k3.h > k4.h and k3.h > k5.h and k3.l >= k1.l and k3.l >= k2.l and k3.l >= k4.l and k3.l >= k5.l)
+    bool is_bot = (k3.l < k1.l and k3.l < k2.l and k3.l < k4.l and k3.l < k5.l and k3.h <= k1.h and k3.h <= k2.h and k3.h <= k4.h and k3.h <= k5.h)
+
+    int bars_elapsed = math.max(1, k3.idx - last_logic_idx)
+    float expanding_mult = math.min(dyn_pen_min_atr + bars_elapsed * growth_rate, max_atr_multiplier)
+    float zone_mult = not na(active_center) ? center_mult_input : (adx_val > adx_threshold ? trend_mult_input : 1.0)
+    float dynamic_threshold = smoothed_atr * expanding_mult * zone_mult
+
+    float potential_amp_top = math.abs(k3.h - last_pen_visual_price)
+    float potential_amp_bot = math.abs(k3.l - last_pen_visual_price)
+
+    bool valid_time_top = bars_elapsed >= required_pen_gap_bars or last_logic_idx == 0
+    bool valid_time_bot = bars_elapsed >= required_pen_gap_bars or last_logic_idx == 0
+    bool valid_amp_top = potential_amp_top >= dynamic_threshold or last_logic_idx == 0
+    bool valid_amp_bot = potential_amp_bot >= dynamic_threshold or last_logic_idx == 0
+
+    bool is_valid_top = is_top and last_pen_type != 1 and valid_time_top and valid_amp_top
+    bool is_valid_bot = is_bot and last_pen_type != -1 and valid_time_bot and valid_amp_bot
+
+    if is_valid_top or is_valid_bot
+        bool cur_is_up = is_valid_top
+
+        [true_raw_idx, true_raw_price] = find_true_raw_extreme(raw_list_var, k3.original_start_idx, k3.original_end_idx, cur_is_up)
+
+        bool skip_due_to_overlap = k3.idx <= last_logic_idx
+
+        if not skip_due_to_overlap and enable_overlap_filter and array.size(pen_objects) > 0
+            Pen last_p_obj = array.get(pen_objects, array.size(pen_objects) - 1)
+            // 【修復3】啟用「嚴格同向價格突破限制」(strict_separation)時,取消ATR容忍緩衝,
+            // 只要新分型價格與前一筆終點重疊(甚至持平)就直接判定不合格,不再放寬。
+            // 原本這個輸入選項只有宣告、從未真正被使用,這裡把它實際接上。
+            float dynamic_tolerance = strict_separation ? 0.0 : current_atr * effective_atr_factor
+
+            if cur_is_up
+                if true_raw_price <= last_p_obj.l + dynamic_tolerance or k3.l <= last_pen_visual_price or k1.l <= last_pen_visual_price
+                    skip_due_to_overlap := true
+            else
+                if true_raw_price >= last_p_obj.h - dynamic_tolerance or k3.h >= last_pen_visual_price or k1.h >= last_pen_visual_price
+                    skip_due_to_overlap := true
+
+        if not skip_due_to_overlap and strict_fractal_gap
+            float gap_tolerance = current_atr * 0.4
+            if cur_is_up and k3.l <= last_pen_visual_price + gap_tolerance
+                skip_due_to_overlap := true
+            else if not cur_is_up and k3.h >= last_pen_visual_price - gap_tolerance
+                skip_due_to_overlap := true
+
+        // 【修復1:防止筆倒回去連線】模組七會即時延伸前一筆的終點到最新K線,
+        // 若確認新分型時前一筆的延伸進度已經超過新分型的真實極值點(時間或價格上未突破),
+        // 強行連線就會產生時間倒退的線段。這裡直接判定該分型無效,等待下一個更遠的分型。
+        if not skip_due_to_overlap
+            int chk_fixed_start_idx = array.size(pen_objects) > 0 ? array.get(pen_objects, array.size(pen_objects) - 1).end_idx : last_pen_idx
+            float chk_fixed_start_price = array.size(pen_objects) > 0 ? (array.get(pen_objects, array.size(pen_objects) - 1).is_up ? array.get(pen_objects, array.size(pen_objects) - 1).h : array.get(pen_objects, array.size(pen_objects) - 1).l) : last_pen_visual_price
+            bool time_order_invalid = true_raw_idx <= chk_fixed_start_idx
+            bool price_dir_invalid = cur_is_up ? true_raw_price <= chk_fixed_start_price : true_raw_price >= chk_fixed_start_price
+            if time_order_invalid or price_dir_invalid
+                skip_due_to_overlap := true
+
+        // 【修復2:防止分型共用K線】新分型視窗的第一根K線(k1),不可與前一筆終點所使用過的
+        // 原始K線重疊或更早,避免相鄰頂底分型共用同一根K線而造成價格重疊誤判連線。
+        if not skip_due_to_overlap and k1.original_start_idx <= last_pen_idx
+            skip_due_to_overlap := true
+
+        if not skip_due_to_overlap
+            if not na(realtime_preview_lbl)
+                label.delete(realtime_preview_lbl)
+                realtime_preview_lbl := na
+
+            int draw_start_idx = last_pen_idx
+
+            if draw_start_idx != 0
+                int p_obj_size = array.size(pen_objects)
+                if p_obj_size > 0
+                    Pen prev_pen = array.get(pen_objects, p_obj_size - 1)
+                    line prev_line = array.get(pen_lines, p_obj_size - 1)
+
+                    if prev_pen.is_up and true_raw_price > prev_pen.h
+                        prev_pen.h := true_raw_price
+                        prev_pen.end_idx := true_raw_idx
+                        line.set_xy2(prev_line, true_raw_idx, true_raw_price)
+                    else if not prev_pen.is_up and true_raw_price < prev_pen.l
+                        prev_pen.l := true_raw_price
+                        prev_pen.end_idx := true_raw_idx
+                        line.set_xy2(prev_line, true_raw_idx, true_raw_price)
+
+            // 【修復核心】:確保每次新筆的起點坐標精確對應上一筆的終點極值,防止來回穿透亂連
+            int fixed_start_idx = array.size(pen_objects) > 0 ? array.get(pen_objects, array.size(pen_objects) - 1).end_idx : draw_start_idx
+            float fixed_start_price = array.size(pen_objects) > 0 ? (array.get(pen_objects, array.size(pen_objects) - 1).is_up ? array.get(pen_objects, array.size(pen_objects) - 1).h : array.get(pen_objects, array.size(pen_objects) - 1).l) : last_pen_visual_price
+
+            line new_l_item = line.new(fixed_start_idx, fixed_start_price, true_raw_idx, true_raw_price, color=color.white, width=1)
+            array.push(pen_lines, new_l_item)
+
+            Pen new_pen = Pen.new(math.max(fixed_start_price, true_raw_price), math.min(fixed_start_price, true_raw_price), fixed_start_idx, true_raw_idx, cur_is_up, current_pen_area, max_pen_dif)
+            array.push(pen_objects, new_pen)
+
+            bool newly_completed_segment = false
+            if seg_direction == 0
+                seg_start_idx := fixed_start_idx
+                seg_start_price := fixed_start_price
+                seg_direction := cur_is_up ? 1 : -1
+                pen_count_in_seg := 1
+            else
+                pen_count_in_seg += 1
+                bool segment_direction_reversed = (seg_direction == 1 and not cur_is_up) or (seg_direction == -1 and cur_is_up)
+                bool segment_price_break = (seg_direction == 1 and true_raw_price < seg_start_price) or (seg_direction == -1 and true_raw_price > seg_start_price)
+                bool is_seg_end = pen_count_in_seg >= 3 and segment_direction_reversed and segment_price_break
+
+                if enable_line_segment and is_seg_end
+                    if bar_index - seg_start_idx < 4900
+                        line seg_l = line.new(seg_start_idx, seg_start_price, true_raw_idx, true_raw_price, xloc=xloc.bar_index, color=seg_direction == 1 ? col_seg_up : col_seg_dn, width=2)
+                        array.push(segment_objects, LineSegment.new(math.max(seg_start_price, true_raw_price), math.min(seg_start_price, true_raw_price), seg_start_idx, true_raw_idx, seg_direction == 1, seg_l))
+                        newly_completed_segment := true
+
+                    seg_start_idx := fixed_start_idx
+                    seg_start_price := fixed_start_price
+                    seg_direction := cur_is_up ? 1 : -1
+                    pen_count_in_seg := 1
+
+            int p_size = array.size(pen_objects)
+
+            if not na(active_center)
+                if new_pen.h > active_center.zg
+                    has_escaped_zg := true
+                    target_zg := active_center.zg
+                if new_pen.l < active_center.zd
+                    has_escaped_zd := true
+                    target_zd := active_center.zd
+
+            if show_signals and is_trending_market and array.size(pen_objects) >= 4
+                Pen completed_pen = array.get(pen_objects, array.size(pen_objects) - 2)
+                float completed_pen_range = completed_pen.h - completed_pen.l
+                bool is_significant_amplitude = completed_pen_range >= current_atr * signal_min_atr
+                bool pass_structure_filter = not only_segment_signal ? is_significant_amplitude : newly_completed_segment and is_significant_amplitude
+
+                if pass_structure_filter
+                    float prev_same_dir_area = 0.0
+                    int total_pens = array.size(pen_objects)
+
+                    if total_pens >= 4
+                        for idx = total_pens - 4 to 0
+                            Pen candidate = array.get(pen_objects, idx)
+                            if candidate.is_up == completed_pen.is_up
+                                prev_same_dir_area := candidate.pen_area
+                                break
+
+                    if not completed_pen.is_up
+                        bool strict_area_cond = prev_same_dir_area == 0 or math.abs(completed_pen.pen_area) <= math.abs(prev_same_dir_area) * 0.95
+                        bool not_in_bull_center = na(active_center) or not active_center.is_bull or completed_pen.l <= active_center.zd
+                        bool is_b1_conservative = strict_area_cond and macd_val > last_macd_val and not_in_bull_center
+
+                        if is_b1_conservative
+                            label.new(completed_pen.end_idx, completed_pen.l, "①買", color=col_b1, yloc=yloc.belowbar, style=label.style_circle, textcolor=color.white, size=get_fontsize(label_font_size), tooltip="纏論一買")
+                            last_trade_type := 1
+                            ref_b1_s1_price := completed_pen.l
+                            alert_b1_signal := true
+
+                        bool is_b2_triggered = ref_b1_s1_price > 0 and completed_pen.l >= ref_b1_s1_price
+                        bool is_b3_triggered = has_escaped_zg and completed_pen.l >= target_zg
+
+                        if is_b2_triggered and not is_b1_conservative
+                            label.new(completed_pen.end_idx, completed_pen.l, "②買", color=col_b2, yloc=yloc.belowbar, style=label.style_circle, textcolor=color.white, size=get_fontsize(label_font_size), tooltip="纏論二買")
+                            alert_b2_signal := true
+                            ref_b1_s1_price := 0.0
+                        else if is_b3_triggered and not is_b1_conservative
+                            label.new(completed_pen.end_idx, completed_pen.l, "③買", color=col_b3, yloc=yloc.belowbar, style=label.style_circle, textcolor=color.white, size=get_fontsize(label_font_size), tooltip="纏論三買")
+                            alert_b3_signal := true
+                            target_zg := 0.0
+                            has_escaped_zg := false
+
+            if na(active_center)
+                if p_size >= 3
+                    Pen p_obj1 = array.get(pen_objects, p_size - 3)
+                    Pen p_obj2 = array.get(pen_objects, p_size - 2)
+                    Pen p_obj3 = array.get(pen_objects, p_size - 1)
+                    Pen[] ps = array.new<Pen>()
+                    array.push(ps, p_obj1)
+                    array.push(ps, p_obj2)
+                    array.push(ps, p_obj3)
+
+                    [v_zg, v_zd, a_max_h, a_min_l] = get_center_bounds(ps, enable_center_isolation, max_pen_cap_for_center)
+
+                    if v_zg > v_zd + syminfo.mintick
+                        bool is_bull = determine_center_is_bull(history_centers, v_zg, v_zd)
+                        box new_center_box = box.new(left=p_obj1.start_idx, top=v_zg, right=true_raw_idx, bottom=v_zd, border_color=color.new(color.white, 100), bgcolor=is_bull ? col_bull : col_bear, border_width=0)
+                        active_center := CenterStruct.new(new_center_box, v_zg, v_zd, a_max_h, a_min_l, is_bull, ps, false)
+                        break_count := 0
+            else
+                int center_age = true_raw_idx - box.get_left(active_center.b)
+                bool force_timeout = center_age > max_center_duration
+                float overlap_buffer = current_atr * effective_atr_factor
+                bool is_overlapping = math.max(new_pen.l, active_center.zd - overlap_buffer) <= math.min(new_pen.h, active_center.zg + overlap_buffer)
+
+                if is_overlapping and not force_timeout
+                    array.push(active_center.pens, new_pen)
+                    [v_zg, v_zd, a_max_h, a_min_l] = get_center_bounds(active_center.pens, enable_center_isolation, max_pen_cap_for_center)
+                    if not active_center.is_upgrade
+                        active_center.zg := v_zg
+                        active_center.zd := v_zd
+                        box.set_top(active_center.b, v_zg)
+                        box.set_bottom(active_center.b, v_zd)
+                    box.set_right(active_center.b, true_raw_idx)
+                    active_center.max_high := math.max(active_center.max_high, new_pen.h)
+                    active_center.min_low := math.min(active_center.min_low, new_pen.l)
+                    break_count := 0
+                else
+                    break_count += 1
+                    if break_count >= 2 or force_timeout
+                        target_zd := active_center.zd
+                        target_zg := active_center.zg
+                        array.push(history_centers, active_center)
+                        active_center := na
+
+            last_macd_val := macd_val
+            current_pen_area := 0.0
+            max_pen_dif := -999999.0
+            last_pen_idx := true_raw_idx
+            last_logic_idx := k3.idx
+            last_pen_type := cur_is_up ? 1 : -1
+            last_pen_visual_price := true_raw_price
+            active_extreme_price := last_pen_visual_price
+            active_extreme_bar_idx := true_raw_idx
+
+// ============================================================================
+// 模組九:即時預備買賣點
+// ============================================================================
+
+if enable_realtime_alert and is_trending_market and barstate.islast and array.size(pen_objects) > 0
+    float active_zd_val = not na(active_center) ? active_center.zd : target_zd
+    float active_zg_val = not na(active_center) ? active_center.zg : target_zg
+    bool near_support = low <= last_pen_visual_price + current_atr * 2.0 or not na(active_center) and low <= active_zd_val + current_atr * 1.5
+
+    if show_signals and last_pen_type == -1 and near_support
+        if na(realtime_preview_lbl)
+            realtime_preview_lbl := label.new(active_extreme_bar_idx, active_extreme_price - current_atr * realtime_offset_m, "①買⚡", color=color.new(col_b1, 10), yloc=yloc.price, style=label.style_circle, textcolor=color.white, size=get_fontsize(label_font_size), tooltip="即時買點")
+        else
+            label.set_xy(realtime_preview_lbl, active_extreme_bar_idx, active_extreme_price - current_atr * realtime_offset_m)
+
+// ============================================================================
+// 模組十:Alert
+// ============================================================================
+
+alertcondition(alert_b1_signal, title="確認一買訊號", message="纏論系統提示:精準一買確認達成!")
+alertcondition(alert_b2_signal, title="確認二買訊號", message="纏論系統提示:二買確認達成!")
+alertcondition(alert_b3_signal, title="確認三買訊號", message="纏論系統提示:三買確認達成!")
+alertcondition(alert_s1_signal, title="確認一賣訊號", message="纏論系統提示:精準一賣確認達成!")
+alertcondition(alert_s2_signal, title="確認二賣訊號", message="纏論系統提示:二賣確認達成!")
+alertcondition(alert_s3_signal, title="確認三賣訊號", message="纏論系統提示:三賣確認達成!")
+
+// ============================================================================
+// 模組十一:動態未確認筆
+// ============================================================================
+
+var line dynamic_pen = na
+
+if barstate.islast or barstate.isrealtime
+    if not na(dynamic_pen)
+        line.delete(dynamic_pen)
+
+    if last_pen_type == 1
+        dynamic_pen := line.new(last_pen_idx, last_pen_visual_price, bar_index, low, color=color.gray, style=line.style_dashed, width=2)
+    else if last_pen_type == -1
+        dynamic_pen := line.new(last_pen_idx, last_pen_visual_price, bar_index, high, color=color.gray, style=line.style_dashed, width=2)

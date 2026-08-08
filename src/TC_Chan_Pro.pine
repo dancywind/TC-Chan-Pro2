@@ -1,514 +1,245 @@
 //@version=6
-indicator("TC Chan Pro M3.3", shorttitle="TC-M3.3", overlay=true, max_labels_count=500, max_lines_count=500)
+indicator("TC Chan Pro M1.2", shorttitle="TC-M12", overlay=true, max_lines_count=500, max_labels_count=500)
 
 //=============================================================================
 // TC CHAN PRO
-// M3.3.1 - PRACTICAL STROKE ENGINE
+// M1.2
+//
+// Raw K
+//   ↓
+// Containment
+//   ↓
+// Direction
+//   ↓
+// GG / DD
+//   ↓
+// Normalized K
+//
+// 本版本只處理「包含關係」。
+// 尚未加入：頂分型、底分型、筆。
 //=============================================================================
 
 
 //=============================================================================
-// 01. INPUTS
+// 01 INPUT
 //=============================================================================
 
-groupGeneral = "01 - General"
-groupFractal = "02 - Fractal"
-groupStroke  = "03 - Stroke"
-groupScore   = "04 - Score"
-groupVisual  = "05 - Visual"
+groupGeneral = "01 General"
+groupVisual = "02 Visual"
 
-
-//-----------------------------------------------------------------------------
-// General
-//-----------------------------------------------------------------------------
-
-showFractals  = input.bool(true, "Show Fractals", group=groupGeneral)
-showCandidate = input.bool(true, "Show Candidate", group=groupGeneral)
-showConfirmed = input.bool(true, "Show Confirmed", group=groupGeneral)
-showLabels    = input.bool(true, "Show Labels", group=groupGeneral)
-showScore     = input.bool(true, "Show Score", group=groupGeneral)
-showDebug     = input.bool(false, "Debug", group=groupGeneral)
-
-
-//-----------------------------------------------------------------------------
-// Fractal
-//-----------------------------------------------------------------------------
-
-fractalMode = input.string(
-     "Practical",
-     "Fractal Mode",
-     options=["Strict", "Practical"],
-     group=groupFractal)
-
-minFractalDistance = input.int(
-     1,
-     "Min Fractal Distance",
-     minval=0,
-     group=groupFractal)
-
-requireAlternation = input.bool(
+showNormalized = input.bool(
      true,
-     "Require Alternation",
-     group=groupFractal)
+     "Show Normalized K",
+     group=groupGeneral)
 
-
-//-----------------------------------------------------------------------------
-// Stroke
-//-----------------------------------------------------------------------------
-
-minStrokeBars = input.int(
-     2,
-     "Min Stroke Bars",
-     minval=1,
-     group=groupStroke)
-
-minStrokePercent = input.float(
-     0.0,
-     "Min Stroke %",
-     minval=0.0,
-     step=0.1,
-     group=groupStroke)
-
-useATRFilter = input.bool(
-     false,
-     "Use ATR Filter",
-     group=groupStroke)
-
-minStrokeATR = input.float(
-     0.0,
-     "Min ATR Multiple",
-     minval=0.0,
-     step=0.1,
-     group=groupStroke)
-
-replaceWeak = input.bool(
+showMergeLabel = input.bool(
      true,
-     "Replace Weak Fractal",
-     group=groupStroke)
+     "Show Merge Label",
+     group=groupGeneral)
 
-allowExtension = input.bool(
+showSourceLabel = input.bool(
      true,
-     "Allow Extension",
-     group=groupStroke)
+     "Show Source H/L",
+     group=groupGeneral)
 
-
-//-----------------------------------------------------------------------------
-// Score
-//-----------------------------------------------------------------------------
-
-scoreThreshold = input.float(
-     50.0,
-     "Score Threshold",
-     minval=0.0,
-     maxval=100.0,
-     group=groupScore)
-
-atrLength = input.int(
-     14,
-     "ATR Length",
-     minval=1,
-     group=groupScore)
-
-
-//-----------------------------------------------------------------------------
-// Visual
-//-----------------------------------------------------------------------------
-
-topColor = input.color(
-     color.red,
-     "Top Fractal",
-     group=groupVisual)
-
-bottomColor = input.color(
+upColor = input.color(
      color.lime,
-     "Bottom Fractal",
+     "Up Direction",
      group=groupVisual)
 
-candidateColor = input.color(
-     color.gray,
-     "Candidate",
-     group=groupVisual)
-
-bullColor = input.color(
-     color.lime,
-     "Bull Stroke",
-     group=groupVisual)
-
-bearColor = input.color(
+downColor = input.color(
      color.red,
-     "Bear Stroke",
+     "Down Direction",
      group=groupVisual)
 
-highColor = input.color(
-     color.aqua,
-     "High Quality",
-     group=groupVisual)
-
-mediumColor = input.color(
-     color.yellow,
-     "Medium Quality",
-     group=groupVisual)
-
-lowColor = input.color(
+neutralColor = input.color(
      color.gray,
-     "Low Quality",
+     "Neutral Direction",
      group=groupVisual)
 
 
 //=============================================================================
-// 02. CONSTANTS
+// 02 CONSTANTS
 //=============================================================================
 
 int DIR_NONE = 0
-int DIR_BULL = 1
-int DIR_BEAR = -1
-
-int FRACTAL_NONE = 0
-int FRACTAL_TOP = 1
-int FRACTAL_BOTTOM = -1
-
-int STROKE_NONE = 0
-int STROKE_CANDIDATE = 1
+int DIR_UP = 1
+int DIR_DOWN = -1
 
 
 //=============================================================================
-// 03. VALID INDICATOR OUTPUT
+// 03 REQUIRED OUTPUT
 //=============================================================================
 
 plot(
      na,
-     title="TC Chan Core",
+     title="TC Chan M1.2 Core",
      display=display.none)
 
 
 //=============================================================================
-// 04. ATR
+// 04 NORMALIZED K DATA
 //=============================================================================
 
-float atrValue = ta.atr(atrLength)
-
-
-//=============================================================================
-// 05. NORMALIZED BAR STORAGE
-//=============================================================================
-
+var normOpen = array.new_float()
 var normHigh = array.new_float()
 var normLow = array.new_float()
-var normOpen = array.new_float()
 var normClose = array.new_float()
-var normVolume = array.new_float()
-var normBar = array.new_int()
+
+var normHighBar = array.new_int()
+var normLowBar = array.new_int()
+
+var normStartBar = array.new_int()
+var normEndBar = array.new_int()
+
 var normDirection = array.new_int()
+var normMergeCount = array.new_int()
 
 
 //=============================================================================
-// 06. FRACTAL STATE
+// 05 STATISTICS
 //=============================================================================
 
-var int lastFractalType = FRACTAL_NONE
-var float lastFractalPrice = na
-var int lastFractalBar = na
-
-var int candidateType = FRACTAL_NONE
-var float candidatePrice = na
-var int candidateBar = na
+var int rawCount = 0
+var int totalMerges = 0
 
 
 //=============================================================================
-// 07. ANCHOR STATE
+// 06 DIRECTION FUNCTION
 //=============================================================================
-
-var int anchorType = FRACTAL_NONE
-var float anchorPrice = na
-var int anchorBar = na
-
-
-//=============================================================================
-// 08. STROKE STATE
-//=============================================================================
-
-var int strokeState = STROKE_NONE
-
-var int strokeDirection = DIR_NONE
-
-var float strokeStartPrice = na
-var float strokeEndPrice = na
-
-var int strokeStartBar = na
-var int strokeEndBar = na
-
-var int lastConfirmedDirection = DIR_NONE
-
-
-//=============================================================================
-// 09. STROKE STORAGE
-//=============================================================================
-
-var strokeDirections = array.new_int()
-var strokeStartPrices = array.new_float()
-var strokeEndPrices = array.new_float()
-var strokeStartBars = array.new_int()
-var strokeEndBars = array.new_int()
-var strokeScores = array.new_float()
-var strokeQuality = array.new_int()
-
-
-//=============================================================================
-// 10. VISUAL OBJECT
-//=============================================================================
-
-var line candidateLine = na
-
-
-//=============================================================================
-// 11. EVENT FLAGS
-//=============================================================================
-
-bool eventTop = false
-bool eventBottom = false
-
-bool eventCandidate = false
-bool eventExtension = false
-bool eventReplacement = false
-
-bool eventBull = false
-bool eventBear = false
-
-bool eventHigh = false
-bool eventMedium = false
-bool eventLow = false
-
-
-//=============================================================================
-// 12. HELPER FUNCTIONS
-//=============================================================================
-
-//-----------------------------------------------------------------------------
-// Containment
-//-----------------------------------------------------------------------------
-
-isContained(
-     float h1,
-     float l1,
-     float h2,
-     float l2) =>
-
-    bool currentContainsPrevious =
-         h1 >= h2 and l1 <= l2
-
-    bool previousContainsCurrent =
-         h2 >= h1 and l2 <= l1
-
-    currentContainsPrevious or previousContainsCurrent
-
-
-//-----------------------------------------------------------------------------
-// Direction
-//-----------------------------------------------------------------------------
 
 getDirection(
-     float h1,
-     float l1,
-     float h2,
-     float l2,
+     float currentHigh,
+     float currentLow,
+     float previousHigh,
+     float previousLow,
      int previousDirection) =>
 
     int result = previousDirection
 
-    bool bullish =
-         h1 > h2 and l1 > l2
-
-    bool bearish =
-         h1 < h2 and l1 < l2
-
-    if bullish
-        result := DIR_BULL
-    else if bearish
-        result := DIR_BEAR
+    if currentHigh > previousHigh and currentLow > previousLow
+        result := DIR_UP
+    else if currentHigh < previousHigh and currentLow < previousLow
+        result := DIR_DOWN
 
     result
 
 
-//-----------------------------------------------------------------------------
-// Add normalized bar
-//-----------------------------------------------------------------------------
+//=============================================================================
+// 07 CONTAINMENT FUNCTION
+//=============================================================================
+
+isContained(
+     float currentHigh,
+     float currentLow,
+     float previousHigh,
+     float previousLow) =>
+
+    bool currentContainsPrevious =
+         currentHigh >= previousHigh and currentLow <= previousLow
+
+    bool previousContainsCurrent =
+         previousHigh >= currentHigh and previousLow <= currentLow
+
+    currentContainsPrevious or previousContainsCurrent
+
+
+//=============================================================================
+// 08 ADD NORMALIZED K
+//=============================================================================
 
 addNormalized(
      float o,
      float h,
      float l,
      float c,
-     float v,
-     int b,
-     int d) =>
+     int hBar,
+     int lBar,
+     int startBar,
+     int endBar,
+     int direction,
+     int merges) =>
 
     array.push(normOpen, o)
     array.push(normHigh, h)
     array.push(normLow, l)
     array.push(normClose, c)
-    array.push(normVolume, v)
-    array.push(normBar, b)
-    array.push(normDirection, d)
 
+    array.push(normHighBar, hBar)
+    array.push(normLowBar, lBar)
 
-//-----------------------------------------------------------------------------
-// Add stroke
-//-----------------------------------------------------------------------------
+    array.push(normStartBar, startBar)
+    array.push(normEndBar, endBar)
 
-addStroke(
-     int d,
-     float sp,
-     float ep,
-     int sb,
-     int eb,
-     float score,
-     int quality) =>
-
-    array.push(strokeDirections, d)
-    array.push(strokeStartPrices, sp)
-    array.push(strokeEndPrices, ep)
-    array.push(strokeStartBars, sb)
-    array.push(strokeEndBars, eb)
-    array.push(strokeScores, score)
-    array.push(strokeQuality, quality)
-
-
-//-----------------------------------------------------------------------------
-// Score
-//-----------------------------------------------------------------------------
-
-calculateScore(
-     float startPrice,
-     float endPrice,
-     int startBar,
-     int endBar) =>
-
-    float movement =
-         math.abs(
-              endPrice -
-              startPrice)
-
-    float base =
-         math.abs(startPrice)
-
-    float movementPercent =
-         base > 0.0 ?
-         movement / base * 100.0 :
-         0.0
-
-    int duration =
-         math.max(
-              1,
-              endBar - startBar)
-
-    // Structure: 35
-    float structureScore = 1.0
-
-    // Movement: 25
-    float movementScore =
-         math.min(
-              movementPercent / 2.0,
-              1.0)
-
-    // Duration: 15
-    float durationScore =
-         math.min(
-              duration / 10.0,
-              1.0)
-
-    // ATR efficiency: 15
-    float atrScore = 0.0
-
-    if atrValue > 0.0
-        atrScore :=
-             math.min(
-                  movement / atrValue / 3.0,
-                  1.0)
-
-    // Volume: 10
-    float averageVolume =
-         ta.sma(
-              volume,
-              20)
-
-    float volumeRatio = 1.0
-
-    if averageVolume > 0.0
-        volumeRatio :=
-             volume / averageVolume
-
-    float volumeScore =
-         math.min(
-              volumeRatio / 1.5,
-              1.0)
-
-    float score =
-         structureScore * 35.0 +
-         movementScore * 25.0 +
-         durationScore * 15.0 +
-         atrScore * 15.0 +
-         volumeScore * 10.0
-
-    score
+    array.push(normDirection, direction)
+    array.push(normMergeCount, merges)
 
 
 //=============================================================================
-// 13. NORMALIZED BAR ENGINE
+// 09 MAIN NORMALIZATION ENGINE
 //=============================================================================
 
 if barstate.isconfirmed
 
-    int count =
-         array.size(normHigh)
+    rawCount += 1
 
     //-------------------------------------------------------------------------
-    // First normalized bar
+    // FIRST K
     //-------------------------------------------------------------------------
 
-    if count == 0
+    if array.size(normHigh) == 0
 
         addNormalized(
              open,
              high,
              low,
              close,
-             volume,
              bar_index,
-             DIR_NONE)
+             bar_index,
+             bar_index,
+             bar_index,
+             DIR_NONE,
+             1)
 
     //-------------------------------------------------------------------------
-    // Existing normalized bars
+    // EXISTING NORMALIZED K
     //-------------------------------------------------------------------------
 
     else
 
-        int lastIndex =
-             count - 1
-
-        float previousHigh =
-             array.get(
-                  normHigh,
-                  lastIndex)
-
-        float previousLow =
-             array.get(
-                  normLow,
-                  lastIndex)
+        int lastIndex = array.size(normHigh) - 1
 
         float previousOpen =
-             array.get(
-                  normOpen,
-                  lastIndex)
+             array.get(normOpen, lastIndex)
 
-        float previousVolume =
-             array.get(
-                  normVolume,
-                  lastIndex)
+        float previousHigh =
+             array.get(normHigh, lastIndex)
+
+        float previousLow =
+             array.get(normLow, lastIndex)
+
+        float previousClose =
+             array.get(normClose, lastIndex)
+
+        int previousHighBar =
+             array.get(normHighBar, lastIndex)
+
+        int previousLowBar =
+             array.get(normLowBar, lastIndex)
+
+        int previousStartBar =
+             array.get(normStartBar, lastIndex)
 
         int previousDirection =
-             array.get(
-                  normDirection,
-                  lastIndex)
+             array.get(normDirection, lastIndex)
+
+        int previousMergeCount =
+             array.get(normMergeCount, lastIndex)
+
+
+        //=====================================================================
+        // CONTAINMENT TEST
+        //=====================================================================
 
         bool contained =
              isContained(
@@ -517,101 +248,14 @@ if barstate.isconfirmed
                   previousHigh,
                   previousLow)
 
-        //=====================================================================
-        // CONTAINMENT
-        //=====================================================================
-
-        if contained
-
-            int direction =
-                 getDirection(
-                      high,
-                      low,
-                      previousHigh,
-                      previousLow,
-                      previousDirection)
-
-            float mergedHigh = na
-            float mergedLow = na
-
-            if direction == DIR_BULL
-
-                mergedHigh :=
-                     math.max(
-                          high,
-                          previousHigh)
-
-                mergedLow :=
-                     math.max(
-                          low,
-                          previousLow)
-
-            else if direction == DIR_BEAR
-
-                mergedHigh :=
-                     math.min(
-                          high,
-                          previousHigh)
-
-                mergedLow :=
-                     math.min(
-                          low,
-                          previousLow)
-
-            else
-
-                mergedHigh :=
-                     math.max(
-                          high,
-                          previousHigh)
-
-                mergedLow :=
-                     math.min(
-                          low,
-                          previousLow)
-
-            array.set(
-                 normOpen,
-                 lastIndex,
-                 previousOpen)
-
-            array.set(
-                 normHigh,
-                 lastIndex,
-                 mergedHigh)
-
-            array.set(
-                 normLow,
-                 lastIndex,
-                 mergedLow)
-
-            array.set(
-                 normClose,
-                 lastIndex,
-                 close)
-
-            array.set(
-                 normVolume,
-                 lastIndex,
-                 previousVolume + volume)
-
-            array.set(
-                 normBar,
-                 lastIndex,
-                 bar_index)
-
-            array.set(
-                 normDirection,
-                 lastIndex,
-                 direction)
 
         //=====================================================================
-        // NEW NORMALIZED BAR
+        // NO CONTAINMENT
         //=====================================================================
 
-        else
+        if not contained
 
-            int direction =
+            int newDirection =
                  getDirection(
                       high,
                       low,
@@ -624,1057 +268,575 @@ if barstate.isconfirmed
                  high,
                  low,
                  close,
-                 volume,
                  bar_index,
-                 direction)
+                 bar_index,
+                 bar_index,
+                 bar_index,
+                 newDirection,
+                 1)
 
-
-//=============================================================================
-// 14. FRACTAL ENGINE
-//=============================================================================
-
-if barstate.isconfirmed
-
-    int normalizedCount =
-         array.size(normHigh)
-
-    if normalizedCount >= 3
-
-        int leftIndex =
-             normalizedCount - 3
-
-        int centerIndex =
-             normalizedCount - 2
-
-        int rightIndex =
-             normalizedCount - 1
-
-        float leftHigh =
-             array.get(
-                  normHigh,
-                  leftIndex)
-
-        float centerHigh =
-             array.get(
-                  normHigh,
-                  centerIndex)
-
-        float rightHigh =
-             array.get(
-                  normHigh,
-                  rightIndex)
-
-        float leftLow =
-             array.get(
-                  normLow,
-                  leftIndex)
-
-        float centerLow =
-             array.get(
-                  normLow,
-                  centerIndex)
-
-        float rightLow =
-             array.get(
-                  normLow,
-                  rightIndex)
-
-        int fractalBar =
-             array.get(
-                  normBar,
-                  centerIndex)
 
         //=====================================================================
-        // STRICT
+        // CONTAINMENT
         //=====================================================================
-
-        bool strictTop =
-             centerHigh > leftHigh and
-             centerHigh > rightHigh
-
-        bool strictBottom =
-             centerLow < leftLow and
-             centerLow < rightLow
-
-        //=====================================================================
-        // PRACTICAL
-        //=====================================================================
-
-        bool practicalTop =
-             centerHigh >= leftHigh and
-             centerHigh >= rightHigh and
-             (centerHigh > leftHigh or centerHigh > rightHigh)
-
-        bool practicalBottom =
-             centerLow <= leftLow and
-             centerLow <= rightLow and
-             (centerLow < leftLow or centerLow < rightLow)
-
-        bool topFractal =
-             fractalMode == "Strict" ?
-             strictTop :
-             practicalTop
-
-        bool bottomFractal =
-             fractalMode == "Strict" ?
-             strictBottom :
-             practicalBottom
-
-        bool distanceOK =
-             na(lastFractalBar) or
-             fractalBar - lastFractalBar >= minFractalDistance
-
-        bool topAlternation =
-             not requireAlternation or
-             lastFractalType != FRACTAL_TOP
-
-        bool bottomAlternation =
-             not requireAlternation or
-             lastFractalType != FRACTAL_BOTTOM
-
-        //=====================================================================
-        // TOP FRACTAL
-        //=====================================================================
-
-        if topFractal and
-             distanceOK and
-             topAlternation
-
-            eventTop := true
-
-            if candidateType == FRACTAL_TOP
-
-                if replaceWeak and
-                     centerHigh > candidatePrice
-
-                    candidatePrice :=
-                         centerHigh
-
-                    candidateBar :=
-                         fractalBar
-
-                    eventReplacement := true
-
-            else
-
-                candidateType :=
-                     FRACTAL_TOP
-
-                candidatePrice :=
-                     centerHigh
-
-                candidateBar :=
-                     fractalBar
-
-            lastFractalType :=
-                 FRACTAL_TOP
-
-            lastFractalPrice :=
-                 centerHigh
-
-            lastFractalBar :=
-                 fractalBar
-
-        //=====================================================================
-        // BOTTOM FRACTAL
-        //=====================================================================
-
-        if bottomFractal and
-             distanceOK and
-             bottomAlternation
-
-            eventBottom := true
-
-            if candidateType == FRACTAL_BOTTOM
-
-                if replaceWeak and
-                     centerLow < candidatePrice
-
-                    candidatePrice :=
-                         centerLow
-
-                    candidateBar :=
-                         fractalBar
-
-                    eventReplacement := true
-
-            else
-
-                candidateType :=
-                     FRACTAL_BOTTOM
-
-                candidatePrice :=
-                     centerLow
-
-                candidateBar :=
-                     fractalBar
-
-            lastFractalType :=
-                 FRACTAL_BOTTOM
-
-            lastFractalPrice :=
-                 centerLow
-
-            lastFractalBar :=
-                 fractalBar
-
-
-//=============================================================================
-// 15. FRACTAL VISUAL
-//=============================================================================
-
-plotshape(
-     showFractals and eventTop,
-     title="Top Fractal",
-     style=shape.triangledown,
-     location=location.abovebar,
-     color=topColor,
-     size=size.tiny,
-     offset=-1)
-
-plotshape(
-     showFractals and eventBottom,
-     title="Bottom Fractal",
-     style=shape.triangleup,
-     location=location.belowbar,
-     color=bottomColor,
-     size=size.tiny,
-     offset=-1)
-
-
-//=============================================================================
-// 16. INITIAL ANCHOR
-//=============================================================================
-
-if barstate.isconfirmed
-
-    if anchorType == FRACTAL_NONE
-
-        if candidateType != FRACTAL_NONE
-
-            anchorType :=
-                 candidateType
-
-            anchorPrice :=
-                 candidatePrice
-
-            anchorBar :=
-                 candidateBar
-
-            candidateType :=
-                 FRACTAL_NONE
-
-            candidatePrice :=
-                 na
-
-            candidateBar :=
-                 na
-
-
-//=============================================================================
-// 17. CREATE CANDIDATE BULL STROKE
-//=============================================================================
-
-if barstate.isconfirmed
-
-    if anchorType == FRACTAL_BOTTOM
-
-        if candidateType == FRACTAL_TOP
-
-            bool directionOK =
-                 lastConfirmedDirection != DIR_BULL
-
-            bool barOrderOK =
-                 candidateBar > anchorBar
-
-            int distance =
-                 candidateBar - anchorBar
-
-            float movement =
-                 math.abs(
-                      candidatePrice -
-                      anchorPrice)
-
-            float base =
-                 math.abs(anchorPrice)
-
-            float movePercent =
-                 base > 0.0 ?
-                 movement / base * 100.0 :
-                 0.0
-
-            bool distanceValid =
-                 distance >= minStrokeBars
-
-            bool priceValid =
-                 movePercent >= minStrokePercent
-
-            bool atrValid =
-                 not useATRFilter or
-                 movement >= atrValue * minStrokeATR
-
-            if directionOK and
-                 barOrderOK and
-                 distanceValid and
-                 priceValid and
-                 atrValid
-
-                strokeDirection :=
-                     DIR_BULL
-
-                strokeStartPrice :=
-                     anchorPrice
-
-                strokeEndPrice :=
-                     candidatePrice
-
-                strokeStartBar :=
-                     anchorBar
-
-                strokeEndBar :=
-                     candidateBar
-
-                strokeState :=
-                     STROKE_CANDIDATE
-
-                eventCandidate := true
-
-
-//=============================================================================
-// 18. CREATE CANDIDATE BEAR STROKE
-//=============================================================================
-
-if barstate.isconfirmed
-
-    if anchorType == FRACTAL_TOP
-
-        if candidateType == FRACTAL_BOTTOM
-
-            bool directionOK =
-                 lastConfirmedDirection != DIR_BEAR
-
-            bool barOrderOK =
-                 candidateBar > anchorBar
-
-            int distance =
-                 candidateBar - anchorBar
-
-            float movement =
-                 math.abs(
-                      candidatePrice -
-                      anchorPrice)
-
-            float base =
-                 math.abs(anchorPrice)
-
-            float movePercent =
-                 base > 0.0 ?
-                 movement / base * 100.0 :
-                 0.0
-
-            bool distanceValid =
-                 distance >= minStrokeBars
-
-            bool priceValid =
-                 movePercent >= minStrokePercent
-
-            bool atrValid =
-                 not useATRFilter or
-                 movement >= atrValue * minStrokeATR
-
-            if directionOK and
-                 barOrderOK and
-                 distanceValid and
-                 priceValid and
-                 atrValid
-
-                strokeDirection :=
-                     DIR_BEAR
-
-                strokeStartPrice :=
-                     anchorPrice
-
-                strokeEndPrice :=
-                     candidatePrice
-
-                strokeStartBar :=
-                     anchorBar
-
-                strokeEndBar :=
-                     candidateBar
-
-                strokeState :=
-                     STROKE_CANDIDATE
-
-                eventCandidate := true
-
-
-//=============================================================================
-// 19. EXTEND CANDIDATE
-//=============================================================================
-
-if barstate.isconfirmed
-
-    if strokeState == STROKE_CANDIDATE
-
-        if allowExtension
-
-            //=================================================================
-            // BULL EXTENSION
-            //=================================================================
-
-            if strokeDirection == DIR_BULL
-
-                if candidateType == FRACTAL_TOP
-
-                    if candidateBar > strokeEndBar
-
-                        if candidatePrice > strokeEndPrice
-
-                            strokeEndPrice :=
-                                 candidatePrice
-
-                            strokeEndBar :=
-                                 candidateBar
-
-                            eventExtension := true
-
-            //=================================================================
-            // BEAR EXTENSION
-            //=================================================================
-
-            if strokeDirection == DIR_BEAR
-
-                if candidateType == FRACTAL_BOTTOM
-
-                    if candidateBar > strokeEndBar
-
-                        if candidatePrice < strokeEndPrice
-
-                            strokeEndPrice :=
-                                 candidatePrice
-
-                            strokeEndBar :=
-                                 candidateBar
-
-                            eventExtension := true
-
-
-//=============================================================================
-// 20. CANDIDATE LINE
-//=============================================================================
-
-if showCandidate
-
-    if strokeState == STROKE_CANDIDATE
-
-        if na(candidateLine)
-
-            candidateLine :=
-                 line.new(
-                      strokeStartBar,
-                      strokeStartPrice,
-                      strokeEndBar,
-                      strokeEndPrice,
-                      xloc=xloc.bar_index,
-                      extend=extend.none,
-                      color=candidateColor,
-                      width=2,
-                      style=line.style_dashed)
 
         else
 
-            line.set_xy1(
-                 candidateLine,
-                 strokeStartBar,
-                 strokeStartPrice)
+            totalMerges += 1
 
-            line.set_xy2(
-                 candidateLine,
-                 strokeEndBar,
-                 strokeEndPrice)
+            int mergeDirection =
+                 previousDirection
+
+
+            //=================================================================
+            // ESTABLISH DIRECTION
+            //=================================================================
+
+            if mergeDirection == DIR_NONE
+
+                if high > previousHigh and low > previousLow
+
+                    mergeDirection := DIR_UP
+
+                else if high < previousHigh and low < previousLow
+
+                    mergeDirection := DIR_DOWN
+
+
+            //=================================================================
+            // UPWARD MERGE
+            //
+            // GG:
+            //
+            // High = higher High
+            // Low  = higher Low
+            //=================================================================
+
+            if mergeDirection == DIR_UP
+
+                float mergedHigh =
+                     math.max(
+                          previousHigh,
+                          high)
+
+                float mergedLow =
+                     math.max(
+                          previousLow,
+                          low)
+
+                int mergedHighBar =
+                     previousHigh >= high ?
+                     previousHighBar :
+                     bar_index
+
+                int mergedLowBar =
+                     previousLow >= low ?
+                     previousLowBar :
+                     bar_index
+
+                array.set(
+                     normHigh,
+                     lastIndex,
+                     mergedHigh)
+
+                array.set(
+                     normLow,
+                     lastIndex,
+                     mergedLow)
+
+                array.set(
+                     normClose,
+                     lastIndex,
+                     close)
+
+                array.set(
+                     normHighBar,
+                     lastIndex,
+                     mergedHighBar)
+
+                array.set(
+                     normLowBar,
+                     lastIndex,
+                     mergedLowBar)
+
+                array.set(
+                     normEndBar,
+                     lastIndex,
+                     bar_index)
+
+                array.set(
+                     normDirection,
+                     lastIndex,
+                     DIR_UP)
+
+                array.set(
+                     normMergeCount,
+                     lastIndex,
+                     previousMergeCount + 1)
+
+
+            //=================================================================
+            // DOWNWARD MERGE
+            //
+            // DD:
+            //
+            // High = lower High
+            // Low  = lower Low
+            //=================================================================
+
+            else if mergeDirection == DIR_DOWN
+
+                float mergedHigh =
+                     math.min(
+                          previousHigh,
+                          high)
+
+                float mergedLow =
+                     math.min(
+                          previousLow,
+                          low)
+
+                int mergedHighBar =
+                     previousHigh <= high ?
+                     previousHighBar :
+                     bar_index
+
+                int mergedLowBar =
+                     previousLow <= low ?
+                     previousLowBar :
+                     bar_index
+
+                array.set(
+                     normHigh,
+                     lastIndex,
+                     mergedHigh)
+
+                array.set(
+                     normLow,
+                     lastIndex,
+                     mergedLow)
+
+                array.set(
+                     normClose,
+                     lastIndex,
+                     close)
+
+                array.set(
+                     normHighBar,
+                     lastIndex,
+                     mergedHighBar)
+
+                array.set(
+                     normLowBar,
+                     lastIndex,
+                     mergedLowBar)
+
+                array.set(
+                     normEndBar,
+                     lastIndex,
+                     bar_index)
+
+                array.set(
+                     normDirection,
+                     lastIndex,
+                     DIR_DOWN)
+
+                array.set(
+                     normMergeCount,
+                     lastIndex,
+                     previousMergeCount + 1)
+
+
+            //=================================================================
+            // UNKNOWN DIRECTION
+            //
+            // 不強行判定方向。
+            // 保留目前結構範圍。
+            //=================================================================
+
+            else
+
+                float mergedHigh =
+                     math.max(
+                          previousHigh,
+                          high)
+
+                float mergedLow =
+                     math.min(
+                          previousLow,
+                          low)
+
+                int mergedHighBar =
+                     previousHigh >= high ?
+                     previousHighBar :
+                     bar_index
+
+                int mergedLowBar =
+                     previousLow <= low ?
+                     previousLowBar :
+                     bar_index
+
+                array.set(
+                     normHigh,
+                     lastIndex,
+                     mergedHigh)
+
+                array.set(
+                     normLow,
+                     lastIndex,
+                     mergedLow)
+
+                array.set(
+                     normClose,
+                     lastIndex,
+                     close)
+
+                array.set(
+                     normHighBar,
+                     lastIndex,
+                     mergedHighBar)
+
+                array.set(
+                     normLowBar,
+                     lastIndex,
+                     mergedLowBar)
+
+                array.set(
+                     normEndBar,
+                     lastIndex,
+                     bar_index)
+
+                array.set(
+                     normMergeCount,
+                     lastIndex,
+                     previousMergeCount + 1)
 
 
 //=============================================================================
-// 21. CONFIRM STROKE
+// 10 VISUALIZATION
 //=============================================================================
 
-if barstate.isconfirmed
+var line highLine = na
+var line lowLine = na
+var line bodyLine = na
 
-    if strokeState == STROKE_CANDIDATE
 
-        bool oppositeFractal = false
+if barstate.islast and showNormalized
 
-        if strokeDirection == DIR_BULL
+    int n = array.size(normHigh)
 
-            oppositeFractal :=
-                 eventBottom
+    if n > 0
 
-        if strokeDirection == DIR_BEAR
+        int i = n - 1
 
-            oppositeFractal :=
-                 eventTop
+        float nOpen =
+             array.get(normOpen, i)
 
-        if oppositeFractal
+        float nHigh =
+             array.get(normHigh, i)
 
-            float movement =
-                 math.abs(
-                      strokeEndPrice -
-                      strokeStartPrice)
+        float nLow =
+             array.get(normLow, i)
 
-            float base =
-                 math.abs(
-                      strokeStartPrice)
+        float nClose =
+             array.get(normClose, i)
 
-            float movePercent =
-                 base > 0.0 ?
-                 movement / base * 100.0 :
-                 0.0
+        int nStart =
+             array.get(normStartBar, i)
 
-            int distance =
-                 strokeEndBar -
-                 strokeStartBar
+        int nEnd =
+             array.get(normEndBar, i)
 
-            bool distanceValid =
-                 distance >= minStrokeBars
+        int nDirection =
+             array.get(normDirection, i)
 
-            bool priceValid =
-                 movePercent >= minStrokePercent
+        color nColor =
+             nDirection == DIR_UP ?
+             upColor :
+             nDirection == DIR_DOWN ?
+             downColor :
+             neutralColor
 
-            bool atrValid =
-                 not useATRFilter or
-                 movement >= atrValue * minStrokeATR
 
-            if distanceValid and
-                 priceValid and
-                 atrValid
+        if not na(highLine)
+            line.delete(highLine)
 
-                //=============================================================
-                // SCORE
-                //=============================================================
+        if not na(lowLine)
+            line.delete(lowLine)
 
-                float score =
-                     calculateScore(
-                          strokeStartPrice,
-                          strokeEndPrice,
-                          strokeStartBar,
-                          strokeEndBar)
+        if not na(bodyLine)
+            line.delete(bodyLine)
 
-                int quality = 0
 
-                if score >= scoreThreshold + 20.0
+        highLine :=
+             line.new(
+                  nStart,
+                  nHigh,
+                  nEnd,
+                  nHigh,
+                  xloc=xloc.bar_index,
+                  color=nColor,
+                  width=2)
 
-                    quality := 2
 
-                else if score >= scoreThreshold
+        lowLine :=
+             line.new(
+                  nStart,
+                  nLow,
+                  nEnd,
+                  nLow,
+                  xloc=xloc.bar_index,
+                  color=nColor,
+                  width=2)
 
-                    quality := 1
 
-                else
-
-                    quality := 0
-
-
-                //=============================================================
-                // STORE
-                //=============================================================
-
-                addStroke(
-                     strokeDirection,
-                     strokeStartPrice,
-                     strokeEndPrice,
-                     strokeStartBar,
-                     strokeEndBar,
-                     score,
-                     quality)
-
-
-                //=============================================================
-                // EVENTS
-                //=============================================================
-
-                if strokeDirection == DIR_BULL
-
-                    eventBull := true
-
-                if strokeDirection == DIR_BEAR
-
-                    eventBear := true
-
-                if quality == 2
-
-                    eventHigh := true
-
-                if quality == 1
-
-                    eventMedium := true
-
-                if quality == 0
-
-                    eventLow := true
-
-
-                //=============================================================
-                // UPDATE DIRECTION
-                //=============================================================
-
-                lastConfirmedDirection :=
-                     strokeDirection
-
-
-                //=============================================================
-                // DRAW CONFIRMED STROKE
-                //=============================================================
-
-                if showConfirmed
-
-                    color strokeColor =
-                         strokeDirection == DIR_BULL ?
-                         bullColor :
-                         bearColor
-
-                    line.new(
-                         strokeStartBar,
-                         strokeStartPrice,
-                         strokeEndBar,
-                         strokeEndPrice,
-                         xloc=xloc.bar_index,
-                         extend=extend.none,
-                         color=strokeColor,
-                         width=3)
-
-
-                //=============================================================
-                // LABEL
-                //=============================================================
-
-                if showLabels
-
-                    string directionLabel =
-                         strokeDirection == DIR_BULL ?
-                         "BULL" :
-                         "BEAR"
-
-                    string scoreLabel =
-                         showScore ?
-                         " " +
-                         str.tostring(
-                              math.round(score)) +
-                         "S" :
-                         ""
-
-                    string labelText =
-                         directionLabel +
-                         scoreLabel
-
-                    color labelColor =
-                         quality == 2 ?
-                         highColor :
-                         quality == 1 ?
-                         mediumColor :
-                         lowColor
-
-                    labelStyle =
-                         strokeDirection == DIR_BULL ?
-                         label.style_label_down :
-                         label.style_label_up
-
-                    label.new(
-                         strokeEndBar,
-                         strokeEndPrice,
-                         labelText,
-                         xloc=xloc.bar_index,
-                         style=labelStyle,
-                         color=labelColor,
-                         textcolor=color.white,
-                         size=size.tiny)
-
-
-                //=============================================================
-                // NEW ANCHOR
-                //=============================================================
-
-                if strokeDirection == DIR_BULL
-
-                    anchorType :=
-                         FRACTAL_TOP
-
-                else
-
-                    anchorType :=
-                         FRACTAL_BOTTOM
-
-                anchorPrice :=
-                     strokeEndPrice
-
-                anchorBar :=
-                     strokeEndBar
-
-
-                //=============================================================
-                // CLEAR CANDIDATE
-                //=============================================================
-
-                candidateType :=
-                     FRACTAL_NONE
-
-                candidatePrice :=
-                     na
-
-                candidateBar :=
-                     na
-
-                strokeState :=
-                     STROKE_NONE
-
-                strokeDirection :=
-                     DIR_NONE
-
-                strokeStartPrice :=
-                     na
-
-                strokeEndPrice :=
-                     na
-
-                strokeStartBar :=
-                     na
-
-                strokeEndBar :=
-                     na
-
-
-                //=============================================================
-                // DELETE CANDIDATE LINE
-                //=============================================================
-
-                if not na(candidateLine)
-
-                    line.delete(
-                         candidateLine)
-
-                    candidateLine :=
-                         na
+        bodyLine :=
+             line.new(
+                  nStart,
+                  nOpen,
+                  nEnd,
+                  nClose,
+                  xloc=xloc.bar_index,
+                  color=nColor,
+                  width=4)
 
 
 //=============================================================================
-// 22. ALERTS
+// 11 MERGE LABEL
 //=============================================================================
 
-alertcondition(
-     eventBull,
-     title="Bull Stroke",
-     message="TC Chan M3.3 Bull Stroke")
+if barstate.isconfirmed and showMergeLabel
 
-alertcondition(
-     eventBear,
-     title="Bear Stroke",
-     message="TC Chan M3.3 Bear Stroke")
+    int n = array.size(normHigh)
 
-alertcondition(
-     eventHigh,
-     title="High Quality Stroke",
-     message="TC Chan M3.3 High Quality Stroke")
+    if n > 0
 
-alertcondition(
-     eventTop,
-     title="Top Fractal",
-     message="TC Chan M3.3 Top Fractal")
+        int i = n - 1
 
-alertcondition(
-     eventBottom,
-     title="Bottom Fractal",
-     message="TC Chan M3.3 Bottom Fractal")
+        int merges =
+             array.get(
+                  normMergeCount,
+                  i)
+
+        if merges > 1
+
+            float labelPrice =
+                 array.get(
+                      normHigh,
+                      i)
+
+            label.new(
+                 bar_index,
+                 labelPrice,
+                 "M" + str.tostring(merges),
+                 xloc=xloc.bar_index,
+                 style=label.style_label_down,
+                 color=color.new(color.blue, 20),
+                 textcolor=color.white,
+                 size=size.tiny)
 
 
 //=============================================================================
-// 23. DEBUG TABLE
+// 12 SOURCE HIGH / LOW
 //=============================================================================
 
-var table debugTable =
+if barstate.isconfirmed and showSourceLabel
+
+    int n = array.size(normHigh)
+
+    if n > 0
+
+        int i = n - 1
+
+        int merges =
+             array.get(
+                  normMergeCount,
+                  i)
+
+        if merges > 1
+
+            int sourceHighBar =
+                 array.get(
+                      normHighBar,
+                      i)
+
+            int sourceLowBar =
+                 array.get(
+                      normLowBar,
+                      i)
+
+            float sourceHigh =
+                 array.get(
+                      normHigh,
+                      i)
+
+            float sourceLow =
+                 array.get(
+                      normLow,
+                      i)
+
+
+            label.new(
+                 sourceHighBar,
+                 sourceHigh,
+                 "H",
+                 xloc=xloc.bar_index,
+                 style=label.style_label_down,
+                 color=color.new(color.aqua, 20),
+                 textcolor=color.white,
+                 size=size.tiny)
+
+
+            label.new(
+                 sourceLowBar,
+                 sourceLow,
+                 "L",
+                 xloc=xloc.bar_index,
+                 style=label.style_label_up,
+                 color=color.new(color.orange, 20),
+                 textcolor=color.white,
+                 size=size.tiny)
+
+
+//=============================================================================
+// 13 STATUS TABLE
+//=============================================================================
+
+var table statusTable =
      table.new(
           position.top_right,
           2,
-          15,
+          7,
           border_width=1)
 
 
 if barstate.islast
 
-    if showDebug
+    int n = array.size(normHigh)
 
-        table.cell(
-             debugTable,
-             0,
-             0,
-             "TC CHAN")
+    table.cell(
+         statusTable,
+         0,
+         0,
+         "TC CHAN")
 
-        table.cell(
-             debugTable,
-             1,
-             0,
-             "M3.3.1")
+    table.cell(
+         statusTable,
+         1,
+         0,
+         "M1.2")
 
+    table.cell(
+         statusTable,
+         0,
+         1,
+         "Raw K")
 
-        table.cell(
-             debugTable,
-             0,
-             1,
-             "Norm Bars")
+    table.cell(
+         statusTable,
+         1,
+         1,
+         str.tostring(rawCount))
 
-        table.cell(
-             debugTable,
-             1,
-             1,
-             str.tostring(
-                  array.size(normHigh)))
+    table.cell(
+         statusTable,
+         0,
+         2,
+         "Norm K")
 
+    table.cell(
+         statusTable,
+         1,
+         2,
+         str.tostring(n))
 
-        table.cell(
-             debugTable,
-             0,
-             2,
-             "Anchor")
+    table.cell(
+         statusTable,
+         0,
+         3,
+         "Merges")
 
-        string anchorText =
-             anchorType == FRACTAL_TOP ?
-             "TOP" :
-             anchorType == FRACTAL_BOTTOM ?
-             "BOTTOM" :
-             "NONE"
-
-        table.cell(
-             debugTable,
-             1,
-             2,
-             anchorText)
-
-
-        table.cell(
-             debugTable,
-             0,
-             3,
-             "Candidate")
-
-        string candidateText =
-             candidateType == FRACTAL_TOP ?
-             "TOP" :
-             candidateType == FRACTAL_BOTTOM ?
-             "BOTTOM" :
-             "NONE"
-
-        table.cell(
-             debugTable,
-             1,
-             3,
-             candidateText)
+    table.cell(
+         statusTable,
+         1,
+         3,
+         str.tostring(totalMerges))
 
 
-        table.cell(
-             debugTable,
-             0,
-             4,
-             "Stroke")
+    if n > 0
 
-        string strokeStateText =
-             strokeState == STROKE_CANDIDATE ?
-             "CANDIDATE" :
-             "NONE"
+        int i = n - 1
 
-        table.cell(
-             debugTable,
-             1,
-             4,
-             strokeStateText)
+        int d =
+             array.get(
+                  normDirection,
+                  i)
 
-
-        table.cell(
-             debugTable,
-             0,
-             5,
-             "Direction")
+        int m =
+             array.get(
+                  normMergeCount,
+                  i)
 
         string directionText =
-             strokeDirection == DIR_BULL ?
-             "BULL" :
-             strokeDirection == DIR_BEAR ?
-             "BEAR" :
+             d == DIR_UP ?
+             "UP" :
+             d == DIR_DOWN ?
+             "DOWN" :
              "NONE"
 
+
         table.cell(
-             debugTable,
+             statusTable,
+             0,
+             4,
+             "Direction")
+
+        table.cell(
+             statusTable,
              1,
-             5,
+             4,
              directionText)
 
 
         table.cell(
-             debugTable,
+             statusTable,
+             0,
+             5,
+             "Last Merge")
+
+        table.cell(
+             statusTable,
+             1,
+             5,
+             str.tostring(m))
+
+
+        table.cell(
+             statusTable,
              0,
              6,
-             "Last Dir")
-
-        string lastDirectionText =
-             lastConfirmedDirection == DIR_BULL ?
-             "BULL" :
-             lastConfirmedDirection == DIR_BEAR ?
-             "BEAR" :
-             "NONE"
+             "Status")
 
         table.cell(
-             debugTable,
+             statusTable,
              1,
              6,
-             lastDirectionText)
-
-
-        table.cell(
-             debugTable,
-             0,
-             7,
-             "Strokes")
-
-        table.cell(
-             debugTable,
-             1,
-             7,
-             str.tostring(
-                  array.size(
-                       strokeDirections)))
-
-
-        table.cell(
-             debugTable,
-             0,
-             8,
-             "Last Score")
-
-        string lastScoreText = "NA"
-
-        if array.size(strokeScores) > 0
-
-            float lastScore =
-                 array.get(
-                      strokeScores,
-                      array.size(strokeScores) - 1)
-
-            lastScoreText :=
-                 str.tostring(
-                      math.round(lastScore))
-
-        table.cell(
-             debugTable,
-             1,
-             8,
-             lastScoreText)
-
-
-        table.cell(
-             debugTable,
-             0,
-             9,
-             "Last Quality")
-
-        string lastQualityText = "NA"
-
-        if array.size(strokeQuality) > 0
-
-            int lastQuality =
-                 array.get(
-                      strokeQuality,
-                      array.size(strokeQuality) - 1)
-
-            if lastQuality == 2
-
-                lastQualityText := "HIGH"
-
-            else if lastQuality == 1
-
-                lastQualityText := "MEDIUM"
-
-            else
-
-                lastQualityText := "LOW"
-
-        table.cell(
-             debugTable,
-             1,
-             9,
-             lastQualityText)
-
-
-        table.cell(
-             debugTable,
-             0,
-             10,
-             "Bull Event")
-
-        table.cell(
-             debugTable,
-             1,
-             10,
-             eventBull ?
-             "YES" :
-             "NO")
-
-
-        table.cell(
-             debugTable,
-             0,
-             11,
-             "Bear Event")
-
-        table.cell(
-             debugTable,
-             1,
-             11,
-             eventBear ?
-             "YES" :
-             "NO")
-
-
-        table.cell(
-             debugTable,
-             0,
-             12,
-             "Top Event")
-
-        table.cell(
-             debugTable,
-             1,
-             12,
-             eventTop ?
-             "YES" :
-             "NO")
-
-
-        table.cell(
-             debugTable,
-             0,
-             13,
-             "Bottom Event")
-
-        table.cell(
-             debugTable,
-             1,
-             13,
-             eventBottom ?
-             "YES" :
-             "NO")
-
-
-        table.cell(
-             debugTable,
-             0,
-             14,
-             "Version")
-
-        table.cell(
-             debugTable,
-             1,
-             14,
-             "M3.3.1")
+             "M1.2 OK")
 
 
 //=============================================================================
-// END TC CHAN PRO M3.3.1
+// 14 ALERT
+//=============================================================================
+
+bool mergeNow =
+     totalMerges > totalMerges[1]
+
+alertcondition(
+     mergeNow,
+     title="TC Merge",
+     message="TC Chan Pro M1.2 Merge")
+
+
+//=============================================================================
+// END
 //=============================================================================

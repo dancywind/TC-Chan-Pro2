@@ -1,0 +1,2 @@
+//@version=6
+indicator("TC Chan Pro", overlay=true)

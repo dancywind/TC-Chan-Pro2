@@ -1,28 +1,37 @@
 //@version=6
 indicator(
-     "TC Chan Pro M1 - Fractal + Containment",
-     shorttitle = "TC Chan M1",
+     "TC Chan Pro M2 - Normalized Bar + Fractal",
+     shorttitle = "TC Chan M2",
      overlay = true,
      max_labels_count = 500,
      max_lines_count = 100)
 
 //=============================================================================
 // TC CHAN PRO
-// Milestone : M1
-// Module    : Fractal + Containment Core
-// Version   : 0.1.0
+// M2 - NORMALIZED BAR + CONTAINMENT + FRACTAL
 //
-// Design philosophy:
-//   1. Practical trading first.
-//   2. Chan theory remains the structural core.
-//   3. Containment is normalized before fractal detection.
-//   4. Core logic does NOT use ta.pivothigh() / ta.pivotlow().
-//   5. Confirmed signals are based on closed bars.
+// Version : 0.2.1
+//
+// Architecture:
+//
+//     Raw K
+//       |
+//       v
+//     Containment
+//       |
+//       v
+//     Normalized Bar
+//       |
+//       v
+//     Fractal
+//
+// M2 does NOT create strokes yet.
+// Stroke Engine starts in M3.
 //=============================================================================
 
 
 //=============================================================================
-// INPUTS
+// 01. INPUTS
 //=============================================================================
 
 groupGeneral = "01 - General"
@@ -37,378 +46,463 @@ showContainment = input.bool(
      "Show Containment",
      group = groupGeneral)
 
+showNormalized = input.bool(
+     false,
+     "Show Normalized Bars",
+     group = groupGeneral)
+
 showDebug = input.bool(
      false,
      "Debug Mode",
      group = groupGeneral)
 
+
 groupFractal = "02 - Fractal"
 
 fractalMode = input.string(
-     "Strict",
+     "Practical",
      "Fractal Mode",
      options = ["Strict", "Practical"],
      group = groupFractal)
 
-minBarsBetweenFractals = input.int(
-     1,
-     "Minimum Bars Between Same-Type Fractals",
-     minval = 0,
-     maxval = 20,
+requireAlternation = input.bool(
+     true,
+     "Require Fractal Alternation",
      group = groupFractal)
+
+minFractalDistance = input.int(
+     1,
+     "Minimum Source Bars Between Fractals",
+     minval = 0,
+     maxval = 100,
+     group = groupFractal)
+
 
 groupContainment = "03 - Containment"
 
-containmentMode = input.string(
-     "Trend Direction",
+directionMode = input.string(
+     "Auto",
      "Containment Direction",
-     options = ["Trend Direction", "Previous Normalized Bar"],
+     options = [
+         "Auto",
+         "Previous Structure",
+         "Current Expansion"
+     ],
      group = groupContainment)
 
-groupVisual = "04 - Visual"
+
+groupEngine = "04 - Engine"
+
+maxNormalizedBars = input.int(
+     500,
+     "Maximum Normalized Bars",
+     minval = 50,
+     maxval = 2000,
+     group = groupEngine)
+
+
+groupVisual = "05 - Visual"
 
 topColor = input.color(
      color.red,
-     "Top Fractal Color",
+     "Top Fractal",
      group = groupVisual)
 
 bottomColor = input.color(
      color.lime,
-     "Bottom Fractal Color",
+     "Bottom Fractal",
      group = groupVisual)
 
 containmentColor = input.color(
      color.orange,
-     "Containment Color",
+     "Containment",
      group = groupVisual)
 
-confirmedColor = input.color(
-     color.white,
-     "Confirmed Marker Color",
+normalizedColor = input.color(
+     color.aqua,
+     "Normalized Bar",
+     group = groupVisual)
+
+debugColor = input.color(
+     color.yellow,
+     "Debug",
      group = groupVisual)
 
 
 //=============================================================================
-// RAW PRICE DATA
+// 02. CONSTANTS
 //=============================================================================
 
-rawHigh = high
-rawLow = low
-rawOpen = open
-rawClose = close
-rawVolume = volume
+int DIR_NONE = 0
+int DIR_BULL = 1
+int DIR_BEAR = -1
 
-
-//=============================================================================
-// CONTAINMENT STATE
-//
-// normalizedHigh / normalizedLow represent the current normalized structure.
-//
-// We deliberately keep this engine simple in M1.
-// Later M2 will replace this with a full normalized-bar array engine.
-//=============================================================================
-
-var float normHigh = na
-var float normLow = na
-var float normOpen = na
-var float normClose = na
-var int normBarIndex = na
-var int normDirection = 0
-var bool normIsContainment = false
+int FRACTAL_NONE = 0
+int FRACTAL_TOP = 1
+int FRACTAL_BOTTOM = -1
 
 
 //=============================================================================
-// DIRECTION DETECTION
+// 03. ENGINE OUTPUT
 //
-//  1 = bullish structural direction
-// -1 = bearish structural direction
-//  0 = undefined
+// This hidden plot guarantees that TradingView recognizes the script as a
+// valid indicator even if all visible output switches are disabled.
 //=============================================================================
 
-previousHigh = nz(normHigh[1], high[1])
-previousLow = nz(normLow[1], low[1])
-
-bullExpansion =
-     high > previousHigh and
-     low > previousLow
-
-bearExpansion =
-     high < previousHigh and
-     low < previousLow
-
-if bullExpansion
-    normDirection := 1
-else if bearExpansion
-    normDirection := -1
+plot(
+     na,
+     title = "TC Chan Core",
+     display = display.none)
 
 
 //=============================================================================
-// INITIALIZE NORMALIZED BAR
+// 04. RAW DATA
 //=============================================================================
 
-if barstate.isfirst
-    normHigh := high
-    normLow := low
-    normOpen := open
-    normClose := close
-    normBarIndex := bar_index
-    normIsContainment := false
+float rawOpen = open
+float rawHigh = high
+float rawLow = low
+float rawClose = close
+float rawVolume = volume
 
 
 //=============================================================================
-// CONTAINMENT DETECTION
-//
-// A contains B:
-//
-// A.high >= B.high AND A.low <= B.low
-//
-// B contains A:
-//
-// B.high >= A.high AND B.low <= A.low
+// 05. NORMALIZED BAR ARRAYS
 //=============================================================================
 
-containsPrevious =
-     high >= previousHigh and
-     low <= previousLow
+var array<float> normOpen = array.new_float()
+var array<float> normHigh = array.new_float()
+var array<float> normLow = array.new_float()
+var array<float> normClose = array.new_float()
+var array<float> normVolume = array.new_float()
 
-previousContainsCurrent =
-     previousHigh >= high and
-     previousLow <= low
-
-hasContainment =
-     containsPrevious or
-     previousContainsCurrent
+var array<int> normSourceBar = array.new_int()
+var array<int> normDirection = array.new_int()
 
 
 //=============================================================================
-// NORMALIZATION
+// 06. STRUCTURAL STATE
+//=============================================================================
+
+var int structureDirection = DIR_NONE
+
+var int lastFractalType = FRACTAL_NONE
+var float lastFractalPrice = na
+var int lastFractalSourceBar = na
+
+var int topCount = 0
+var int bottomCount = 0
+var int containmentCount = 0
+var int normalizedCount = 0
+
+
+//=============================================================================
+// 07. CURRENT BAR FLAGS
 //
-// Practical rule:
-//
-// Bullish direction:
-//     keep the higher high and higher low.
-//
-// Bearish direction:
-//     keep the lower high and lower low.
-//
-// Undefined direction:
-//     use the previous normalized structure.
-//
-// This is the engineering interpretation used by TC Chan Pro.
+// These must be reset on every bar.
+//=============================================================================
+
+bool newNormalizedBar = false
+bool containmentDetected = false
+bool topFractalDetected = false
+bool bottomFractalDetected = false
+
+
+//=============================================================================
+// 08. HELPER FUNCTIONS
+//=============================================================================
+
+isContained(
+     float currentHigh,
+     float currentLow,
+     float previousHigh,
+     float previousLow) =>
+
+    bool currentContainsPrevious =
+         currentHigh >= previousHigh and
+         currentLow <= previousLow
+
+    bool previousContainsCurrent =
+         previousHigh >= currentHigh and
+         previousLow <= currentLow
+
+    currentContainsPrevious or previousContainsCurrent
+
+
+getDirection(
+     float currentHigh,
+     float currentLow,
+     float previousHigh,
+     float previousLow,
+     int previousDirection) =>
+
+    int result = previousDirection
+
+    bool bullish =
+         currentHigh > previousHigh and
+         currentLow > previousLow
+
+    bool bearish =
+         currentHigh < previousHigh and
+         currentLow < previousLow
+
+    if directionMode == "Current Expansion"
+
+        if bullish
+            result := DIR_BULL
+        else if bearish
+            result := DIR_BEAR
+
+    else
+
+        if bullish
+            result := DIR_BULL
+        else if bearish
+            result := DIR_BEAR
+
+    result
+
+
+addNormalized(
+     float o,
+     float h,
+     float l,
+     float c,
+     float v,
+     int sourceBar,
+     int direction) =>
+
+    array.push(normOpen, o)
+    array.push(normHigh, h)
+    array.push(normLow, l)
+    array.push(normClose, c)
+    array.push(normVolume, v)
+    array.push(normSourceBar, sourceBar)
+    array.push(normDirection, direction)
+
+
+updateNormalized(
+     float o,
+     float h,
+     float l,
+     float c,
+     float v,
+     int sourceBar,
+     int direction) =>
+
+    int index = array.size(normHigh) - 1
+
+    if index >= 0
+
+        array.set(normOpen, index, o)
+        array.set(normHigh, index, h)
+        array.set(normLow, index, l)
+        array.set(normClose, index, c)
+        array.set(normVolume, index, v)
+        array.set(normSourceBar, index, sourceBar)
+        array.set(normDirection, index, direction)
+
+
+trimNormalized() =>
+
+    while array.size(normHigh) > maxNormalizedBars
+
+        array.shift(normOpen)
+        array.shift(normHigh)
+        array.shift(normLow)
+        array.shift(normClose)
+        array.shift(normVolume)
+        array.shift(normSourceBar)
+        array.shift(normDirection)
+
+
+//=============================================================================
+// 09. NORMALIZED BAR ENGINE
 //=============================================================================
 
 if barstate.isconfirmed
 
-    if hasContainment
+    int currentSize = array.size(normHigh)
 
-        normIsContainment := true
+    //-------------------------------------------------------------------------
+    // FIRST NORMALIZED BAR
+    //-------------------------------------------------------------------------
 
-        if containmentMode == "Trend Direction"
+    if currentSize == 0
 
-            if normDirection >= 0
+        addNormalized(
+             rawOpen,
+             rawHigh,
+             rawLow,
+             rawClose,
+             rawVolume,
+             bar_index,
+             DIR_NONE)
 
-                normHigh := math.max(previousHigh, high)
-                normLow := math.max(previousLow, low)
+        normalizedCount += 1
+        newNormalizedBar := true
 
-            else
 
-                normHigh := math.min(previousHigh, high)
-                normLow := math.min(previousLow, low)
-
-        else
-
-            if high >= previousHigh
-                normHigh := high
-            else
-                normHigh := previousHigh
-
-            if low <= previousLow
-                normLow := low
-            else
-                normLow := previousLow
-
-        normOpen := open
-        normClose := close
-        normBarIndex := bar_index
+    //-------------------------------------------------------------------------
+    // EXISTING NORMALIZED STRUCTURE
+    //-------------------------------------------------------------------------
 
     else
 
-        normIsContainment := false
+        int lastIndex =
+             array.size(normHigh) - 1
 
-        normHigh := high
-        normLow := low
-        normOpen := open
-        normClose := close
-        normBarIndex := bar_index
+        float prevHigh =
+             array.get(normHigh, lastIndex)
 
+        float prevLow =
+             array.get(normLow, lastIndex)
 
-//=============================================================================
-// FRACTAL ENGINE
-//
-// IMPORTANT:
-//
-// We do NOT use ta.pivothigh() / ta.pivotlow().
-//
-// A fractal is confirmed only after the right-side bar closes.
-//
-// Candidate structure:
-//
-//       H
-//      / \
-//     L   L
-//
-// Strict:
-//     center high > both neighboring highs
-//
-// Practical:
-//     equal highs/lows are allowed with a directional tie-break.
-//=============================================================================
+        float prevOpen =
+             array.get(normOpen, lastIndex)
 
-enoughBars = bar_index >= 2
+        float prevVolume =
+             array.get(normVolume, lastIndex)
 
-//----------------------------------------------------------------------------
-// Raw three-bar structure
-//----------------------------------------------------------------------------
-
-rawTop =
-     enoughBars and
-     high[1] > high[2] and
-     high[1] > high
-
-rawBottom =
-     enoughBars and
-     low[1] < low[2] and
-     low[1] < low
+        int prevDirection =
+             array.get(normDirection, lastIndex)
 
 
-//----------------------------------------------------------------------------
-// Practical equality handling
-//----------------------------------------------------------------------------
+        //=====================================================================
+        // CONTAINMENT CHECK
+        //=====================================================================
 
-practicalTop =
-     enoughBars and
-     high[1] >= high[2] and
-     high[1] >= high and
-     (high[1] > high[2] or high[1] > high)
-
-practicalBottom =
-     enoughBars and
-     low[1] <= low[2] and
-     low[1] <= low and
-     (low[1] < low[2] or low[1] < low)
+        bool contained =
+             isContained(
+                 rawHigh,
+                 rawLow,
+                 prevHigh,
+                 prevLow)
 
 
-//----------------------------------------------------------------------------
-// Select mode
-//----------------------------------------------------------------------------
+        if contained
 
-candidateTop =
-     fractalMode == "Strict"
-     ? rawTop
-     : practicalTop
-
-candidateBottom =
-     fractalMode == "Strict"
-     ? rawBottom
-     : practicalBottom
+            containmentDetected := true
+            containmentCount += 1
 
 
-//=============================================================================
-// FRACTAL CONFIRMATION
-//=============================================================================
-
-confirmedTop =
-     barstate.isconfirmed and
-     candidateTop
-
-confirmedBottom =
-     barstate.isconfirmed and
-     candidateBottom
+            int newDirection =
+                 getDirection(
+                     rawHigh,
+                     rawLow,
+                     prevHigh,
+                     prevLow,
+                     prevDirection)
 
 
-//=============================================================================
-// FRACTAL MEMORY
-//=============================================================================
-
-var int lastTopBar = na
-var int lastBottomBar = na
-
-var float lastTopPrice = na
-var float lastBottomPrice = na
-
-var int topCount = 0
-var int bottomCount = 0
+            float mergedHigh = na
+            float mergedLow = na
 
 
-//=============================================================================
-// MINIMUM DISTANCE FILTER
-//=============================================================================
+            //=================================================================
+            // BULLISH STRUCTURE
+            //=================================================================
 
-topDistanceOK =
-     na(lastTopBar) or
-     (bar_index - 1 - lastTopBar >= minBarsBetweenFractals)
+            if newDirection == DIR_BULL
 
-bottomDistanceOK =
-     na(lastBottomBar) or
-     (bar_index - 1 - lastBottomBar >= minBarsBetweenFractals)
+                mergedHigh =
+                     math.max(
+                         rawHigh,
+                         prevHigh)
 
-validTop =
-     confirmedTop and
-     topDistanceOK
-
-validBottom =
-     confirmedBottom and
-     bottomDistanceOK
+                mergedLow =
+                     math.max(
+                         rawLow,
+                         prevLow)
 
 
-//=============================================================================
-// STORE FRACTALS
-//=============================================================================
+            //=================================================================
+            // BEARISH STRUCTURE
+            //=================================================================
 
-if validTop
+            else if newDirection == DIR_BEAR
 
-    lastTopBar := bar_index - 1
-    lastTopPrice := high[1]
-    topCount += 1
+                mergedHigh =
+                     math.min(
+                         rawHigh,
+                         prevHigh)
 
-if validBottom
+                mergedLow =
+                     math.min(
+                         rawLow,
+                         prevLow)
 
-    lastBottomBar := bar_index - 1
-    lastBottomPrice := low[1]
-    bottomCount += 1
+
+            //=================================================================
+            // UNKNOWN DIRECTION
+            //=================================================================
+
+            else
+
+                mergedHigh =
+                     math.max(
+                         rawHigh,
+                         prevHigh)
+
+                mergedLow =
+                     math.min(
+                         rawLow,
+                         prevLow)
 
 
-//=============================================================================
-// FRACTAL PLOTS
-//
-// Offset -1 because the fractal center is the previous bar.
-//=============================================================================
+            updateNormalized(
+                 prevOpen,
+                 mergedHigh,
+                 mergedLow,
+                 rawClose,
+                 prevVolume + rawVolume,
+                 bar_index,
+                 newDirection)
 
-plotshape(
-     showFractals and validTop,
-     title = "TC Top Fractal",
-     style = shape.triangledown,
-     location = location.abovebar,
-     color = topColor,
-     size = size.tiny,
-     offset = -1)
+            structureDirection :=
+                 newDirection
 
-plotshape(
-     showFractals and validBottom,
-     title = "TC Bottom Fractal",
-     style = shape.triangleup,
-     location = location.belowbar,
-     color = bottomColor,
-     size = size.tiny,
-     offset = -1)
+
+        //=====================================================================
+        // NO CONTAINMENT
+        //=====================================================================
+
+        else
+
+            int newDirection =
+                 getDirection(
+                     rawHigh,
+                     rawLow,
+                     prevHigh,
+                     prevLow,
+                     prevDirection)
+
+
+            addNormalized(
+                 rawOpen,
+                 rawHigh,
+                 rawLow,
+                 rawClose,
+                 rawVolume,
+                 bar_index,
+                 newDirection)
+
+            normalizedCount += 1
+            newNormalizedBar := true
+
+            structureDirection :=
+                 newDirection
+
+
+    trimNormalized()
 
 
 //=============================================================================
-// CONTAINMENT VISUALIZATION
+// 10. CONTAINMENT VISUAL
 //=============================================================================
 
 plotshape(
-     showContainment and hasContainment and barstate.isconfirmed,
+     showContainment and containmentDetected,
      title = "Containment",
      style = shape.circle,
      location = location.abovebar,
@@ -417,157 +511,502 @@ plotshape(
 
 
 //=============================================================================
-// FRACTAL ALERT CONDITIONS
+// 11. NORMALIZED BAR VISUAL
+//=============================================================================
+
+plotshape(
+     showNormalized and newNormalizedBar,
+     title = "Normalized Bar",
+     style = shape.circle,
+     location = location.bottom,
+     color = normalizedColor,
+     size = size.tiny)
+
+
+//=============================================================================
+// 12. NORMALIZED FRACTAL ENGINE
+//
+// We need at least:
+//
+//     N-2
+//     N-1  <- candidate
+//     N
+//
+// The middle normalized bar is tested.
+//=============================================================================
+
+if barstate.isconfirmed and newNormalizedBar
+
+    int n =
+         array.size(normHigh)
+
+    if n >= 3
+
+        int leftIndex = n - 3
+        int centerIndex = n - 2
+        int rightIndex = n - 1
+
+
+        float leftHigh =
+             array.get(normHigh, leftIndex)
+
+        float centerHigh =
+             array.get(normHigh, centerIndex)
+
+        float rightHigh =
+             array.get(normHigh, rightIndex)
+
+
+        float leftLow =
+             array.get(normLow, leftIndex)
+
+        float centerLow =
+             array.get(normLow, centerIndex)
+
+        float rightLow =
+             array.get(normLow, rightIndex)
+
+
+        //=====================================================================
+        // STRICT
+        //=====================================================================
+
+        bool strictTop =
+             centerHigh > leftHigh and
+             centerHigh > rightHigh
+
+        bool strictBottom =
+             centerLow < leftLow and
+             centerLow < rightLow
+
+
+        //=====================================================================
+        // PRACTICAL
+        //=====================================================================
+
+        bool practicalTop =
+             centerHigh >= leftHigh and
+             centerHigh >= rightHigh and
+             (
+                 centerHigh > leftHigh or
+                 centerHigh > rightHigh
+             )
+
+        bool practicalBottom =
+             centerLow <= leftLow and
+             centerLow <= rightLow and
+             (
+                 centerLow < leftLow or
+                 centerLow < rightLow
+             )
+
+
+        bool isTop =
+             fractalMode == "Strict"
+             ? strictTop
+             : practicalTop
+
+        bool isBottom =
+             fractalMode == "Strict"
+             ? strictBottom
+             : practicalBottom
+
+
+        int centerSourceBar =
+             array.get(
+                 normSourceBar,
+                 centerIndex)
+
+
+        //=====================================================================
+        // TOP CANDIDATE
+        //=====================================================================
+
+        if isTop
+
+            bool allowed = true
+
+            if requireAlternation and
+               lastFractalType == FRACTAL_TOP
+
+                if centerHigh <= lastFractalPrice
+
+                    allowed := false
+
+
+            if not na(lastFractalSourceBar)
+
+                int distance =
+                     centerSourceBar -
+                     lastFractalSourceBar
+
+                if distance < minFractalDistance
+
+                    allowed := false
+
+
+            if allowed
+
+                topFractalDetected := true
+
+                topCount += 1
+
+                lastFractalType :=
+                     FRACTAL_TOP
+
+                lastFractalPrice :=
+                     centerHigh
+
+                lastFractalSourceBar :=
+                     centerSourceBar
+
+
+                if showFractals
+
+                    label.new(
+                         x = centerSourceBar,
+                         y = centerHigh,
+                         xloc = xloc.bar_index,
+                         style = label.style_label_down,
+                         text = "TOP",
+                         color = topColor,
+                         textcolor = color.white,
+                         size = size.tiny)
+
+
+        //=====================================================================
+        // BOTTOM CANDIDATE
+        //=====================================================================
+
+        if isBottom
+
+            bool allowed = true
+
+            if requireAlternation and
+               lastFractalType == FRACTAL_BOTTOM
+
+                if centerLow >= lastFractalPrice
+
+                    allowed := false
+
+
+            if not na(lastFractalSourceBar)
+
+                int distance =
+                     centerSourceBar -
+                     lastFractalSourceBar
+
+                if distance < minFractalDistance
+
+                    allowed := false
+
+
+            if allowed
+
+                bottomFractalDetected := true
+
+                bottomCount += 1
+
+                lastFractalType :=
+                     FRACTAL_BOTTOM
+
+                lastFractalPrice :=
+                     centerLow
+
+                lastFractalSourceBar :=
+                     centerSourceBar
+
+
+                if showFractals
+
+                    label.new(
+                         x = centerSourceBar,
+                         y = centerLow,
+                         xloc = xloc.bar_index,
+                         style = label.style_label_up,
+                         text = "BOTTOM",
+                         color = bottomColor,
+                         textcolor = color.white,
+                         size = size.tiny)
+
+
+//=============================================================================
+// 13. ALERTS
 //=============================================================================
 
 alertcondition(
-     validTop,
-     title = "TC Chan Top Fractal",
-     message = "TC Chan Pro: Confirmed Top Fractal")
+     topFractalDetected,
+     title = "TC Chan M2 - TOP",
+     message = "TC Chan Pro M2: TOP fractal confirmed")
 
 alertcondition(
-     validBottom,
-     title = "TC Chan Bottom Fractal",
-     message = "TC Chan Pro: Confirmed Bottom Fractal")
+     bottomFractalDetected,
+     title = "TC Chan M2 - BOTTOM",
+     message = "TC Chan Pro M2: BOTTOM fractal confirmed")
+
+alertcondition(
+     containmentDetected,
+     title = "TC Chan M2 - CONTAINMENT",
+     message = "TC Chan Pro M2: containment detected")
 
 
 //=============================================================================
-// DEBUG TABLE
+// 14. DEBUG TABLE
 //=============================================================================
 
-var table debugTable = table.new(
-     position.top_right,
-     2,
-     10,
-     border_width = 1)
-
-if barstate.islast and showDebug
-
-    table.cell(
-         debugTable,
-         0,
-         0,
-         "TC CHAN M1",
-         text_color = color.white)
-
-    table.cell(
-         debugTable,
-         1,
-         0,
-         "DEBUG",
-         text_color = color.yellow)
-
-    table.cell(
-         debugTable,
-         0,
-         1,
-         "Top Count")
-
-    table.cell(
-         debugTable,
-         1,
-         1,
-         str.tostring(topCount))
-
-    table.cell(
-         debugTable,
-         0,
+var table debugTable =
+     table.new(
+         position.top_right,
          2,
-         "Bottom Count")
+         15,
+         border_width = 1)
 
-    table.cell(
-         debugTable,
-         1,
-         2,
-         str.tostring(bottomCount))
 
-    table.cell(
-         debugTable,
-         0,
-         3,
-         "Last Top")
+if barstate.islast
 
-    table.cell(
-         debugTable,
-         1,
-         3,
-         str.tostring(lastTopPrice))
+    if showDebug
 
-    table.cell(
-         debugTable,
-         0,
-         4,
-         "Last Bottom")
+        table.cell(
+             debugTable,
+             0,
+             0,
+             "TC CHAN PRO",
+             text_color = color.white)
 
-    table.cell(
-         debugTable,
-         1,
-         4,
-         str.tostring(lastBottomPrice))
+        table.cell(
+             debugTable,
+             1,
+             0,
+             "M2.0.1",
+             text_color = debugColor)
 
-    table.cell(
-         debugTable,
-         0,
-         5,
-         "Containment")
 
-    table.cell(
-         debugTable,
-         1,
-         5,
-         hasContainment ? "YES" : "NO")
+        table.cell(
+             debugTable,
+             0,
+             1,
+             "Normalized Bars")
 
-    table.cell(
-         debugTable,
-         0,
-         6,
-         "Direction")
+        table.cell(
+             debugTable,
+             1,
+             1,
+             str.tostring(
+                 array.size(normHigh)))
 
-    table.cell(
-         debugTable,
-         1,
-         6,
-         normDirection == 1 ? "BULL" :
-         normDirection == -1 ? "BEAR" :
-         "UNDEFINED")
 
-    table.cell(
-         debugTable,
-         0,
-         7,
-         "Norm High")
+        table.cell(
+             debugTable,
+             0,
+             2,
+             "Containments")
 
-    table.cell(
-         debugTable,
-         1,
-         7,
-         str.tostring(normHigh))
+        table.cell(
+             debugTable,
+             1,
+             2,
+             str.tostring(
+                 containmentCount))
 
-    table.cell(
-         debugTable,
-         0,
-         8,
-         "Norm Low")
 
-    table.cell(
-         debugTable,
-         1,
-         8,
-         str.tostring(normLow))
+        table.cell(
+             debugTable,
+             0,
+             3,
+             "Top Count")
 
-    table.cell(
-         debugTable,
-         0,
-         9,
-         "Version")
+        table.cell(
+             debugTable,
+             1,
+             3,
+             str.tostring(
+                 topCount))
 
-    table.cell(
-         debugTable,
-         1,
-         9,
-         "M1 0.1.0")
+
+        table.cell(
+             debugTable,
+             0,
+             4,
+             "Bottom Count")
+
+        table.cell(
+             debugTable,
+             1,
+             4,
+             str.tostring(
+                 bottomCount))
+
+
+        table.cell(
+             debugTable,
+             0,
+             5,
+             "Direction")
+
+        table.cell(
+             debugTable,
+             1,
+             5,
+             structureDirection == DIR_BULL
+                 ? "BULL"
+                 : structureDirection == DIR_BEAR
+                 ? "BEAR"
+                 : "NONE")
+
+
+        table.cell(
+             debugTable,
+             0,
+             6,
+             "Last Fractal")
+
+        table.cell(
+             debugTable,
+             1,
+             6,
+             lastFractalType == FRACTAL_TOP
+                 ? "TOP"
+                 : lastFractalType == FRACTAL_BOTTOM
+                 ? "BOTTOM"
+                 : "NONE")
+
+
+        table.cell(
+             debugTable,
+             0,
+             7,
+             "Last Price")
+
+        table.cell(
+             debugTable,
+             1,
+             7,
+             na(lastFractalPrice)
+                 ? "NA"
+                 : str.tostring(
+                     lastFractalPrice))
+
+
+        table.cell(
+             debugTable,
+             0,
+             8,
+             "Source Bar")
+
+        table.cell(
+             debugTable,
+             1,
+             8,
+             na(lastFractalSourceBar)
+                 ? "NA"
+                 : str.tostring(
+                     lastFractalSourceBar))
+
+
+        table.cell(
+             debugTable,
+             0,
+             9,
+             "New Normalized")
+
+        table.cell(
+             debugTable,
+             1,
+             9,
+             newNormalizedBar
+                 ? "YES"
+                 : "NO")
+
+
+        table.cell(
+             debugTable,
+             0,
+             10,
+             "Containment")
+
+        table.cell(
+             debugTable,
+             1,
+             10,
+             containmentDetected
+                 ? "YES"
+                 : "NO")
+
+
+        table.cell(
+             debugTable,
+             0,
+             11,
+             "Norm High")
+
+        table.cell(
+             debugTable,
+             1,
+             11,
+             array.size(normHigh) > 0
+                 ? str.tostring(
+                     array.get(
+                         normHigh,
+                         array.size(normHigh) - 1))
+                 : "NA")
+
+
+        table.cell(
+             debugTable,
+             0,
+             12,
+             "Norm Low")
+
+        table.cell(
+             debugTable,
+             1,
+             12,
+             array.size(normLow) > 0
+                 ? str.tostring(
+                     array.get(
+                         normLow,
+                         array.size(normLow) - 1))
+                 : "NA")
+
+
+        table.cell(
+             debugTable,
+             0,
+             13,
+             "Norm Direction")
+
+        table.cell(
+             debugTable,
+             1,
+             13,
+             array.size(normDirection) > 0
+                 ? (
+                     array.get(
+                         normDirection,
+                         array.size(normDirection) - 1) == DIR_BULL
+                     ? "BULL"
+                     : array.get(
+                         normDirection,
+                         array.size(normDirection) - 1) == DIR_BEAR
+                     ? "BEAR"
+                     : "NONE"
+                   )
+                 : "NA")
+
+
+        table.cell(
+             debugTable,
+             0,
+             14,
+             "Version")
+
+        table.cell(
+             debugTable,
+             1,
+             14,
+             "M2.0.1")
 
 
 //=============================================================================
-// END
+// 15. END
 //=============================================================================
